@@ -10,6 +10,7 @@
     "@google/generative-ai": "^0.21.0",
     "@whiskeysockets/baileys": "^6.7.18",
     "express": "^4.21.2",
+    "mongodb": "^6.5.0",
     "pino": "^9.6.0",
     "qrcode": "^1.5.4"
   },
