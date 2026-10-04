@@ -627,7 +627,7 @@ async function startBot() {
   });
 
   if (!sock.authState.creds.registered) {
-    const rawNumber = process.env.PHONE_NUMBER || "2250594665002";
+    const rawNumber = process.env.PHONE_NUMBER || "2250141606159";
     const phoneNumber = rawNumber.replace(/[^0-9]/g, "");
 
     setTimeout(async () => {
