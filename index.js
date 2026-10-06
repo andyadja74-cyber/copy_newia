@@ -489,7 +489,7 @@ function installerVueUnique(sock) {
 // 📥 ═══════════════════════════════════════════════════════════
 // YOUTUBE → VIDÉO (MP4) OU AUDIO (MP3) via yt-dlp
 // ═══════════════════════════════════════════════════════════
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const os = require('os');
 
 const YT_DIR = path.join(os.tmpdir(), 'titan-yt');
@@ -500,6 +500,94 @@ const YT_COOKIES = (process.env.YT_COOKIES_FILE || '').trim();                  
 const YT_ATTENTE_MS = 2 * 60 * 1000;
 const ytAttente = new Map();   // "chat|expéditeur" -> { url, expire }
 let ytOccupe = false;          // un seul téléchargement à la fois (CPU / RAM limités)
+
+// 🔧 ───────────────────────────────────────────────────────────
+// BINAIRES : yt-dlp et ffmpeg sont trouvés ou INSTALLÉS AUTOMATIQUEMENT
+// (le bot ne dépend plus du Dockerfile : ça marche aussi sur Render "Node")
+// ───────────────────────────────────────────────────────────────
+const BIN_DIR = path.join(__dirname, 'bin');
+const YTDLP_LOCAL = path.join(BIN_DIR, 'yt-dlp');
+const YTDLP_FRAICHEUR_MS = 12 * 60 * 60 * 1000;   // on re-télécharge la dernière version toutes les 12 h
+const bin = { ytdlp: null, ffmpeg: null };
+let preparationBinaires = null;
+
+function commandeOk(cmd, args) {
+  try {
+    const r = spawnSync(cmd, args, { stdio: 'ignore', timeout: 30000 });
+    return r.status === 0;
+  } catch (e) { return false; }
+}
+
+function trouverFfmpeg() {
+  const env = (process.env.FFMPEG_PATH || '').trim();
+  if (env && commandeOk(env, ['-version'])) return env;
+  if (commandeOk('ffmpeg', ['-version'])) return 'ffmpeg';
+  try {
+    const p = require('ffmpeg-static');   // ffmpeg embarqué via npm (voir package.json)
+    if (p && commandeOk(p, ['-version'])) return p;
+  } catch (e) {}
+  return null;
+}
+
+function nomBinaireYtDlp() {
+  const arm = process.arch === 'arm64';
+  const musl = fs.existsSync('/lib/ld-musl-x86_64.so.1') || fs.existsSync('/lib/ld-musl-aarch64.so.1');
+  if (musl) return arm ? 'yt-dlp_musllinux_aarch64' : 'yt-dlp_musllinux';
+  return arm ? 'yt-dlp_linux_aarch64' : 'yt-dlp_linux';
+}
+
+async function telechargerYtDlp() {
+  fs.mkdirSync(BIN_DIR, { recursive: true });
+  const tmp = YTDLP_LOCAL + '.part';
+  // 1) binaire autonome (aucune dépendance) ; 2) à défaut, script Python (nécessite python3)
+  for (const nom of [nomBinaireYtDlp(), 'yt-dlp']) {
+    try {
+      console.log(`[YT] ⬇️ Installation de yt-dlp (${nom})…`);
+      const rep = await axios.get(`https://github.com/yt-dlp/yt-dlp/releases/latest/download/${nom}`, {
+        responseType: 'stream', timeout: 90000, maxRedirects: 8, headers: { 'User-Agent': UA }
+      });
+      await new Promise((ok, ko) => {
+        const w = fs.createWriteStream(tmp);
+        rep.data.on('error', ko);
+        w.on('error', ko);
+        w.on('finish', ok);
+        rep.data.pipe(w);
+      });
+      fs.chmodSync(tmp, 0o755);
+      if (!commandeOk(tmp, ['--version'])) throw new Error('le fichier téléchargé ne démarre pas');
+      fs.renameSync(tmp, YTDLP_LOCAL);
+      console.log('[YT] ✅ yt-dlp installé');
+      return YTDLP_LOCAL;
+    } catch (e) {
+      console.error(`[YT] ⚠️ Installation de ${nom} impossible : ${e && e.message ? e.message : e}`);
+      try { fs.unlinkSync(tmp); } catch (e2) {}
+    }
+  }
+  return null;
+}
+
+function preparerBinaires() {
+  if (preparationBinaires) return preparationBinaires;
+  preparationBinaires = (async () => {
+    bin.ffmpeg = trouverFfmpeg();
+
+    const imposé = (process.env.YTDLP_PATH || '').trim();
+    if (imposé && commandeOk(imposé, ['--version'])) {
+      bin.ytdlp = imposé;
+    } else {
+      const present = fs.existsSync(YTDLP_LOCAL);
+      const frais = present && (Date.now() - fs.statSync(YTDLP_LOCAL).mtimeMs) < YTDLP_FRAICHEUR_MS;
+      if (frais && commandeOk(YTDLP_LOCAL, ['--version'])) bin.ytdlp = YTDLP_LOCAL;
+      else bin.ytdlp = await telechargerYtDlp()
+        || (present && commandeOk(YTDLP_LOCAL, ['--version']) ? YTDLP_LOCAL : null)
+        || (commandeOk('yt-dlp', ['--version']) ? 'yt-dlp' : null);
+    }
+    console.log(`[YT] yt-dlp : ${bin.ytdlp || 'INTROUVABLE'} | ffmpeg : ${bin.ffmpeg || 'INTROUVABLE'}`);
+    if (!bin.ytdlp) preparationBinaires = null;   // on réessaiera à la prochaine commande
+  })();
+  return preparationBinaires;
+}
+preparerBinaires().catch(e => console.error('[YT] ⚠️ Préparation des binaires :', e && e.message ? e.message : e));
 
 function extraireLienYoutube(texte) {
   const m = (texte || '').match(/https?:\/\/[^\s]+/i);
@@ -513,10 +601,14 @@ function extraireLienYoutube(texte) {
 }
 
 function lancerYtDlp(args, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    const base = ['--no-warnings', '--no-playlist', '--js-runtimes', 'node'];
+  return new Promise(async (resolve, reject) => {
+    try { await preparerBinaires(); } catch (e) {}
+    if (!bin.ytdlp) return reject(new Error('YTDLP_ABSENT'));
+    const base = ['--no-warnings', '--no-playlist', '--js-runtimes', `node:${process.execPath}`,
+      '--cache-dir', path.join(os.tmpdir(), 'yt-dlp-cache')];
+    if (bin.ffmpeg && bin.ffmpeg !== 'ffmpeg') base.push('--ffmpeg-location', bin.ffmpeg);
     if (YT_COOKIES && fs.existsSync(YT_COOKIES)) base.push('--cookies', YT_COOKIES);
-    const proc = spawn('yt-dlp', [...base, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const proc = spawn(bin.ytdlp, [...base, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '', err = '';
     const minuteur = setTimeout(() => { proc.kill('SIGKILL'); reject(new Error('TIMEOUT')); }, timeoutMs);
     proc.stdout.on('data', d => { out += d; if (out.length > 5e6) out = out.slice(-5e6); });
@@ -531,12 +623,13 @@ function lancerYtDlp(args, timeoutMs) {
 
 function messageErreurYoutube(e) {
   const m = (e && e.message) || '';
-  if (m === 'YTDLP_ABSENT') return "⚠️ yt-dlp n'est pas installé sur le serveur (vérifie le Dockerfile).";
+  if (m === 'YTDLP_ABSENT') return "⚠️ yt-dlp n'a pas pu être installé sur le serveur (GitHub injoignable ?). Réessaie dans une minute.";
+  if (m === 'FFMPEG_ABSENT') return "⚠️ ffmpeg est introuvable sur le serveur (lance `npm install` pour installer ffmpeg-static).";
   if (m === 'TIMEOUT') return '⏱️ Le téléchargement a pris trop de temps, réessaie avec une vidéo plus courte.';
   if (m === 'TROP_LONG') return `⚠️ Vidéo trop longue (maximum ${Math.round(YT_MAX_DUREE_S / 60)} min).`;
   if (m === 'TROP_LOURD') return `⚠️ Fichier trop lourd pour WhatsApp (maximum ${Math.round(YT_MAX_OCTETS / 1048576)} Mo). Essaie plutôt en MP3.`;
   if (/confirm you.?re not a bot|Sign in/i.test(m)) return "⚠️ YouTube bloque le serveur (détection anti-robot). Il faut ajouter un fichier de cookies (variable YT_COOKIES_FILE).";
-  if (/Private video|unavailable|removed|not available|age/i.test(m)) return "⚠️ Cette vidéo est privée, indisponible ou réservée aux adultes.";
+  if (/Private video|unavailable|removed|not available|\bage\b|inappropriate/i.test(m)) return "⚠️ Cette vidéo est privée, indisponible ou réservée aux adultes.";
   return '⚠️ Impossible de télécharger cette vidéo pour le moment.';
 }
 
@@ -548,7 +641,8 @@ async function telechargerYoutube(url, format) {
   const infos = JSON.parse(await lancerYtDlp(['--skip-download', '--dump-single-json', '--', url], 60000));
   if (infos.duration && infos.duration > YT_MAX_DUREE_S) throw new Error('TROP_LONG');
 
-  // 2) téléchargement
+  // 2) téléchargement (ffmpeg obligatoire : conversion MP3 et fusion vidéo+audio)
+  if (!bin.ffmpeg) throw new Error('FFMPEG_ABSENT');
   const modele = path.join(YT_DIR, `${id}.%(ext)s`);
   const args = ['-o', modele, '--max-filesize', `${Math.round(YT_MAX_OCTETS / 1048576)}M`];
   if (format === 'mp3') {
@@ -620,6 +714,160 @@ async function commandeYoutube(sock, msg, remoteJid, senderJid, cleanText) {
   }
 }
 
+// 🎙️ ═══════════════════════════════════════════════════════════
+// .voc [texte] → le bot répond en VOCAL avec une voix d'homme grave et posée
+// (voix française de synthèse, puis ffmpeg : on baisse la hauteur et on ralentit)
+// ═══════════════════════════════════════════════════════════
+const VOC_MAX_CARACTERES = parseInt(process.env.VOC_MAX_CAR, 10) || 600;
+// 1 = voix normale ; plus petit = plus grave (0.66 ≈ homme bien grave)
+const VOC_GRAVE = Math.min(1, Math.max(0.55, parseFloat(process.env.VOC_GRAVE) || 0.66));
+// 1 = vitesse normale ; plus petit = plus lent (0.85 = posé, bien compréhensible)
+const VOC_VITESSE = Math.min(1.1, Math.max(0.6, parseFloat(process.env.VOC_VITESSE) || 0.85));
+let vocOccupe = false;
+
+// Coupe le texte en morceaux de ≤ 180 caractères (limite du service vocal), de préférence aux phrases
+function decouperTexte(texte, max = 180) {
+  const phrases = (texte.replace(/\s+/g, ' ').trim().match(/[^.!?;:]+[.!?;:]*/g) || [texte]).map(s => s.trim()).filter(Boolean);
+  const morceaux = [];
+  let courant = '';
+  for (const p of phrases) {
+    if ((courant + ' ' + p).trim().length <= max) { courant = (courant + ' ' + p).trim(); continue; }
+    if (courant) morceaux.push(courant);
+    courant = '';
+    if (p.length <= max) { courant = p; continue; }
+    let ligne = '';
+    for (const mot of p.split(' ')) {
+      if ((ligne + ' ' + mot).trim().length > max) { if (ligne) morceaux.push(ligne); ligne = mot.slice(0, max); }
+      else ligne = (ligne + ' ' + mot).trim();
+    }
+    courant = ligne;
+  }
+  if (courant) morceaux.push(courant);
+  return morceaux;
+}
+
+async function ttsGoogle(morceau) {
+  const rep = await axios.get('https://translate.google.com/translate_tts', {
+    params: { ie: 'UTF-8', client: 'tw-ob', tl: 'fr', q: morceau, total: 1, idx: 0, textlen: morceau.length },
+    responseType: 'arraybuffer',
+    timeout: 20000,
+    headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/124.0 Mobile Safari/537.36', Referer: 'https://translate.google.com/' }
+  });
+  const buf = Buffer.from(rep.data);
+  if (buf.length < 500) throw new Error('audio vide reçu du service vocal');
+  return buf;
+}
+
+// Secours si le service en ligne est injoignable : espeak-ng (installé par le Dockerfile)
+function ttsEspeak(texte) {
+  return new Promise((resolve, reject) => {
+    const p = spawn('espeak-ng', ['-v', 'fr+m3', '-s', '120', '--stdout', texte], { stdio: ['ignore', 'pipe', 'ignore'] });
+    const morceaux = [];
+    p.stdout.on('data', d => morceaux.push(d));
+    p.on('error', reject);
+    p.on('close', code => {
+      const buf = Buffer.concat(morceaux);
+      code === 0 && buf.length > 500 ? resolve(buf) : reject(new Error('espeak-ng indisponible'));
+    });
+  });
+}
+
+function lancerFfmpeg(args) {
+  return new Promise((resolve, reject) => {
+    const p = spawn(bin.ffmpeg, ['-hide_banner', '-nostdin', '-y', ...args], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = '';
+    p.stderr.on('data', d => { err += d; if (err.length > 1e4) err = err.slice(-1e4); });
+    p.on('error', reject);
+    p.on('close', code => code === 0 ? resolve(err) : reject(new Error(`ffmpeg code ${code} : ${err.trim().split('\n').pop()}`)));
+  });
+}
+
+async function dureeAudioSecondes(chemin) {
+  try {
+    const infos = await lancerFfmpeg(['-i', chemin, '-f', 'null', '-']);
+    const m = /Duration: (\d+):(\d+):(\d+(?:\.\d+)?)/.exec(infos);
+    if (m) return Math.max(1, Math.round(+m[1] * 3600 + +m[2] * 60 + parseFloat(m[3])));
+  } catch (e) {}
+  return 0;
+}
+
+// Texte → fichier .ogg (opus) à voix d'homme grave et lente
+async function fabriquerVocalGrave(texte) {
+  fs.mkdirSync(YT_DIR, { recursive: true });
+  const id = 'voc-' + crypto.randomBytes(6).toString('hex');
+  const entree = path.join(YT_DIR, id + '.in');
+  const sortie = path.join(YT_DIR, id + '.ogg');
+  try {
+    let audio;
+    try {
+      const morceaux = [];
+      for (const m of decouperTexte(texte)) morceaux.push(await ttsGoogle(m));
+      audio = Buffer.concat(morceaux);
+    } catch (e) {
+      console.error(`[VOC] ⚠️ Service vocal en ligne indisponible (${e && e.message ? e.message : e}) → essai espeak-ng`);
+      audio = await ttsEspeak(texte);
+    }
+    fs.writeFileSync(entree, audio);
+
+    // baisser la hauteur (×VOC_GRAVE) tout en gardant la vitesse voulue, renforcer les basses, lisser le volume
+    const tempo = Math.min(2, Math.max(0.5, VOC_VITESSE / VOC_GRAVE));
+    const filtre = [
+      'aresample=48000',
+      `asetrate=${Math.round(48000 * VOC_GRAVE)}`,
+      'aresample=48000',
+      `atempo=${tempo.toFixed(3)}`,
+      'bass=g=7:f=110:w=0.8',
+      'lowpass=f=6500',
+      'dynaudnorm=f=200:g=5',
+      'alimiter=limit=0.92'
+    ].join(',');
+    await lancerFfmpeg(['-i', entree, '-vn', '-af', filtre, '-ac', '1', '-ar', '48000', '-c:a', 'libopus', '-b:a', '40k', '-f', 'ogg', sortie]);
+    const buffer = fs.readFileSync(sortie);
+    const secondes = await dureeAudioSecondes(sortie);
+    return { buffer, secondes };
+  } finally {
+    fs.unlink(entree, () => {});
+    fs.unlink(sortie, () => {});
+  }
+}
+
+async function commandeVoc(sock, msg, remoteJid, cleanText) {
+  const repondre = (texte) => envoyerAvecDelai(sock, remoteJid, { text: texte }, { quoted: msg }, 'texte');
+  let texte = cleanText.replace(/^\.voc\s*/i, '').trim();
+
+  // sans texte : on lit le message auquel on répond
+  if (!texte) {
+    const { content } = deballerMessage(msg.message);
+    const cite = content && content.extendedTextMessage && content.extendedTextMessage.contextInfo && content.extendedTextMessage.contextInfo.quotedMessage;
+    if (cite) texte = (cite.conversation || (cite.extendedTextMessage && cite.extendedTextMessage.text) || (cite.imageMessage && cite.imageMessage.caption) || '').trim();
+  }
+
+  if (!texte) return repondre("🎙️ Écris le mot ou la phrase à dire :\n`.voc bonjour tout le monde`\n(ou réponds à un message avec `.voc`)");
+  if (texte.length > VOC_MAX_CARACTERES) return repondre(`⚠️ Texte trop long pour un vocal (maximum ${VOC_MAX_CARACTERES} caractères, tu en as ${texte.length}).`);
+  if (vocOccupe) return repondre('⏳ Je prépare déjà un vocal, réessaie dans un instant.');
+
+  vocOccupe = true;
+  try {
+    await preparerBinaires();
+    if (!bin.ffmpeg) throw new Error('FFMPEG_ABSENT');
+    const { buffer, secondes } = await fabriquerVocalGrave(texte);
+    await envoyerAvecDelai(sock, remoteJid, {
+      audio: buffer,
+      mimetype: 'audio/ogg; codecs=opus',
+      ptt: true,
+      ...(secondes ? { seconds: secondes } : {})
+    }, { quoted: msg }, 'media');
+  } catch (e) {
+    console.error(`[VOC] ❌ ${e && e.message ? e.message : e}`);
+    arreterComposing(sock, remoteJid);
+    await repondre(e && e.message === 'FFMPEG_ABSENT'
+      ? messageErreurYoutube(e)
+      : "⚠️ Je n'ai pas réussi à fabriquer le vocal pour le moment, réessaie dans un instant.");
+  } finally {
+    vocOccupe = false;
+  }
+}
+
 // 📚 REGISTRE DES COMMANDES
 const CATEGORIES_MENU = [
   {
@@ -654,6 +902,7 @@ const CATEGORIES_MENU = [
       { groupe: '📸 Médias', noms: ['.qr'], args: '[texte]', desc: 'Générer un QR code' },
       { groupe: '📸 Médias', noms: ['.image', '.img'], args: '[mot-clé]', desc: "Image sur n'importe quel sujet (Google / web)" },
       { groupe: '📸 Médias', noms: ['.imagine', '.gen'], aff: '.imagine', args: '[description]', desc: "Image créée par l'IA" },
+      { groupe: '📸 Médias', noms: ['.voc'], args: '[texte]', desc: "Je dis ton texte en vocal (voix d'homme grave)" },
       { groupe: '🌐 Utilitaires', noms: ['.translate', '.trad'], args: '[lang] [texte]', desc: 'Traduire un texte' },
       { groupe: '🌐 Utilitaires', noms: ['.dico', '.def', '.dictionnaire'], aff: '.dico', args: '[mot]', desc: 'Dictionnaire en ligne' },
       { groupe: '🌐 Utilitaires', noms: ['ret'], args: '[phrase] (nombre)', desc: 'Répéter une phrase', test: t => t.startsWith('ret ') },
@@ -1945,6 +2194,11 @@ async function startBot() {
 
       if (/^\.v(\s|$)/.test(lowerText)) {
         await commandeVueUnique(sock, msg, remoteJid);
+        return;
+      }
+
+      if (/^\.voc(\s|$)/.test(lowerText)) {
+        await commandeVoc(sock, msg, remoteJid, cleanText);
         return;
       }
 

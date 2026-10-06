@@ -1,10 +1,7 @@
 FROM node:22-alpine
 
-# Python, Make, G++, Git, FFmpeg (audio/vidéo) + pip pour yt-dlp
-RUN apk add --no-cache python3 py3-pip make g++ git ffmpeg ca-certificates
-
-# yt-dlp avec ses composants YouTube (Node 22 sert de moteur JavaScript)
-RUN pip install --no-cache-dir --break-system-packages "yt-dlp[default]"
+# Python (secours yt-dlp), Make, G++, Git (dépendances npm), FFmpeg (audio/vidéo), espeak-ng (secours voix pour .voc)
+RUN apk add --no-cache python3 make g++ git ffmpeg espeak-ng ca-certificates
 
 WORKDIR /app
 
@@ -15,5 +12,5 @@ COPY . .
 
 EXPOSE 3000
 
-# YouTube change souvent : on met yt-dlp à jour à chaque démarrage (sans bloquer si ça échoue)
-CMD ["sh", "-c", "pip install -U --no-cache-dir --break-system-packages 'yt-dlp[default]' >/dev/null 2>&1 || true; node index.js"]
+# yt-dlp est téléchargé / mis à jour automatiquement par le bot au démarrage (dossier /app/bin)
+CMD ["node", "index.js"]
