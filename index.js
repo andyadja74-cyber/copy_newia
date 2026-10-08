@@ -28,14 +28,9 @@ const {
   MOTS_AMOUR_PRIVE,
   REPONSE_AMOUR_MAMAN,
   VERDICTS_MENSONGE,
-  MOTS_SQUID,
   DONNEES_CERVEAU,
   COMMENTAIRES_CERVEAU,
-  CHEMINS_LABYRINTHE,
   LISTE_DRAGUES,
-  SUBS_LABYRINTHE,
-  partiesEnCours,
-  timersInactivite,
   vueUniqueCache,
   sessionsMotDePasse,
   profilsJoueurs,
@@ -71,6 +66,101 @@ const melanger = (tab) => {
 const nomAffiche = (jid) => profilsJoueurs[jid] || `@${jid.split('@')[0]}`;
 const UA = 'TitanBot/1.0 (bot WhatsApp personnel)';
 
+// 📝 ═══════════════════════════════════════════════════════════
+// JOURNAL DES MESSAGES : qui écrit, où (contact ou groupe), quel type, quel contenu
+// Désactivable avec la variable d'environnement LOG_MESSAGES=off
+// ═══════════════════════════════════════════════════════════
+const LOG_MESSAGES_ACTIF = !['off', '0', 'non', 'false'].includes((process.env.LOG_MESSAGES || 'on').trim().toLowerCase());
+const contactsConnus = new Map();   // jid -> { nom (nom enregistré dans ton téléphone), pseudo (nom de profil) }
+const groupesConnus = new Map();    // jid -> { nom, expire }
+const DUREE_CACHE_GROUPE_MS = 60 * 60 * 1000;
+const TYPES_MESSAGE = {
+  conversation: 'texte', extendedTextMessage: 'texte', imageMessage: 'image', videoMessage: 'vidéo',
+  audioMessage: 'audio / vocal', documentMessage: 'document', stickerMessage: 'sticker',
+  contactMessage: 'contact partagé', contactsArrayMessage: 'contacts partagés',
+  locationMessage: 'localisation', liveLocationMessage: 'localisation en direct',
+  reactionMessage: 'réaction', pollCreationMessage: 'sondage', pollUpdateMessage: 'vote sondage',
+  protocolMessage: 'protocole (suppression / édition)'
+};
+
+function memoriserContact(c) {
+  if (!c || !c.id) return;
+  const actuel = contactsConnus.get(c.id) || {};
+  contactsConnus.set(c.id, {
+    nom: c.name || c.verifiedName || actuel.nom || null,   // nom enregistré dans ton téléphone
+    pseudo: c.notify || actuel.pseudo || null               // nom de profil choisi par la personne
+  });
+}
+
+function numeroDuJid(jid) {
+  const base = (jid || '').split('@')[0].split(':')[0];
+  return jid && jid.endsWith('@lid') ? `ID ${base}` : `+${base}`;
+}
+
+// Ex : "Ami Paul (~Paulo) · +2250700000000"   ou   "~Paulo · +2250700000000" si pas dans tes contacts
+function libelleContact(jid, pseudoMsg) {
+  if (!jid) return '?';
+  const c = contactsConnus.get(jid) || {};
+  const pseudo = c.pseudo || pseudoMsg;
+  let nom = null;
+  if (c.nom) nom = pseudo && pseudo !== c.nom ? `${c.nom} (~${pseudo})` : c.nom;
+  else if (pseudo) nom = `~${pseudo}`;
+  return nom ? `${nom} · ${numeroDuJid(jid)}` : numeroDuJid(jid);
+}
+
+async function nomGroupe(sock, jid) {
+  const connu = groupesConnus.get(jid);
+  if (connu && connu.expire > Date.now()) return connu.nom;
+  try {
+    const meta = await sock.groupMetadata(jid);
+    const nom = meta.subject || 'Groupe sans nom';
+    groupesConnus.set(jid, { nom, expire: Date.now() + DUREE_CACHE_GROUPE_MS });
+    return nom;
+  } catch (e) {
+    return connu ? connu.nom : 'Groupe (nom inconnu)';
+  }
+}
+
+async function journaliserMessage(sock, msg, { muet = false } = {}) {
+  if (!LOG_MESSAGES_ACTIF || !msg || !msg.key) return;
+  try {
+    const jid = msg.key.remoteJid || '?';
+    const estGroupe = jid.endsWith('@g.us');
+    const estBot = !!msg.key.fromMe;
+    const date = new Date(lireTimestamp(msg.messageTimestamp)).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'medium' });
+
+    const { content, viewOnce } = deballerMessage(msg.message || {});
+    const cleType = content ? Object.keys(content).find(k => k !== 'messageContextInfo') : null;
+    const type = (cleType && TYPES_MESSAGE[cleType]) || cleType || 'inconnu';
+    const corps = content ? (content.conversation || content.extendedTextMessage?.text || (cleType && content[cleType]?.caption) || '') : '';
+    const extrait = corps.replace(/\s+/g, ' ').trim();
+    const contenu = extrait ? (extrait.length > 300 ? extrait.slice(0, 300) + '…' : extrait) : '(pas de texte)';
+
+    let source, auteur;
+    if (estGroupe) {
+      const nomG = await nomGroupe(sock, jid);
+      source = `👥 GROUPE « ${nomG} » (${jid.split('@')[0]})`;
+      auteur = estBot ? '🤖 Bot (compte Titan)' : libelleContact(msg.key.participant, msg.pushName);
+    } else {
+      source = `👤 CONTACT privé · ${libelleContact(jid, estBot ? null : msg.pushName)}`;
+      auteur = estBot ? '🤖 Bot (compte Titan)' : libelleContact(jid, msg.pushName);
+    }
+
+    const tags = [muet && '🔇 expéditeur muet', viewOnce && '👁️ vue unique'].filter(Boolean);
+    console.log([
+      `┏━━ 📩 MESSAGE · ${date} ━━`,
+      `┃ 📍 Source   : ${source}`,
+      `┃ 👤 Auteur   : ${auteur}`,
+      `┃ 🏷️ Type     : ${type}${tags.length ? `   [${tags.join(' · ')}]` : ''}`,
+      `┃ 💬 Contenu  : ${contenu}`,
+      `┃ 🆔 ID       : ${msg.key.id}`,
+      `┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`
+    ].join('\n'));
+  } catch (e) {
+    console.error('[LOG] ⚠️ Journal du message impossible :', e && e.message ? e.message : e);
+  }
+}
+
 // ⏱️ Délai entre deux phrases de drague (modifiable avec la variable Render DRAGUE_DELAI_MS)
 const DELAI_DRAGUE_MS = parseInt(process.env.DRAGUE_DELAI_MS, 10) || 8000;
 // 🚦 Anti-spam : une commande par utilisateur toutes les 2,5 secondes
@@ -84,6 +174,16 @@ const MENU_IMAGES = (() => {
   } catch (e) {
     console.error('⚠️ menu-images.js introuvable : les menus seront envoyés sans image.');
     return [];
+  }
+})();
+
+// 🎬 Vidéo du menu (optionnelle) : fichier media/menu.mp4 dans le projet
+const MENU_VIDEO = (() => {
+  try {
+    const chemin = path.join(__dirname, 'media', 'menu.mp4');
+    return fs.existsSync(chemin) ? fs.readFileSync(chemin) : null;
+  } catch (e) {
+    return null;
   }
 })();
 
@@ -131,28 +231,6 @@ async function getAuthState() {
       }
     }
   };
-}
-
-function reinitialiserJeu(groupId) {
-  if (partiesEnCours[groupId]) {
-    if (partiesEnCours[groupId].timerFeu) clearTimeout(partiesEnCours[groupId].timerFeu);
-    if (partiesEnCours[groupId].timerBombe) clearTimeout(partiesEnCours[groupId].timerBombe);
-    if (timersInactivite[groupId]) clearTimeout(timersInactivite[groupId]);
-    delete partiesEnCours[groupId];
-    delete timersInactivite[groupId];
-  }
-}
-
-function demarrerTimerInactivite(sock, groupId) {
-  if (timersInactivite[groupId]) clearTimeout(timersInactivite[groupId]);
-  timersInactivite[groupId] = setTimeout(async () => {
-    if (partiesEnCours[groupId]) {
-      reinitialiserJeu(groupId);
-      await envoyerAvecDelai(sock, groupId, { 
-        text: "🧹 *SESSION EXPIRÉE :* bon😮‍💨 je m'en vais parceque tu veux plus m'utiliser💔 bye 😭" 
-      }, {}, 'texte');
-    }
-  }, 3 * 60 * 1000);
 }
 
 // ⏱️ SIMULATION DE FRAPPE HUMAINE RÉALISTE (FAÇON "NUMI" / HUMAIN NORMAL SUR LES RÉSEAUX)
@@ -249,13 +327,6 @@ async function envoyerAvecDelai(sock, remoteJid, content, options = {}, typeActi
       arreterComposing(sock, remoteJid);
     }
   });
-}
-
-function genererBarreHP(hp, maxHp = 100) {
-  const totalBlocs = 10;
-  const blocsRemplis = Math.max(0, Math.min(totalBlocs, Math.round((hp / maxHp) * totalBlocs)));
-  const blocsVides = totalBlocs - blocsRemplis;
-  return `[${'█'.repeat(blocsRemplis)}${'░'.repeat(blocsVides)}] ${hp}/${maxHp}`;
 }
 
 // 👁️ ═══════════════════════════════════════════════════════════
@@ -486,29 +557,14 @@ function installerVueUnique(sock) {
   });
 }
 
-// 📥 ═══════════════════════════════════════════════════════════
-// YOUTUBE → VIDÉO (MP4) OU AUDIO (MP3) via yt-dlp
+// 🔧 ═══════════════════════════════════════════════════════════
+// FFMPEG : trouvé sur le serveur ou via ffmpeg-static (utilisé par les vocaux .voc et .voc-f)
 // ═══════════════════════════════════════════════════════════
 const { spawn, spawnSync } = require('child_process');
 const os = require('os');
 
-const YT_DIR = path.join(os.tmpdir(), 'titan-yt');
-const YT_MAX_OCTETS = (parseInt(process.env.YT_MAX_MO, 10) || 60) * 1024 * 1024;   // taille max envoyée
-const YT_MAX_DUREE_S = parseInt(process.env.YT_MAX_DUREE_S, 10) || 1200;            // durée max : 20 min
-const YT_MAX_HAUTEUR = parseInt(process.env.YT_MAX_HAUTEUR, 10) || 720;             // qualité vidéo max
-const YT_COOKIES = (process.env.YT_COOKIES_FILE || '').trim();                      // optionnel (anti-blocage YouTube)
-const YT_ATTENTE_MS = 2 * 60 * 1000;
-const ytAttente = new Map();   // "chat|expéditeur" -> { url, expire }
-let ytOccupe = false;          // un seul téléchargement à la fois (CPU / RAM limités)
-
-// 🔧 ───────────────────────────────────────────────────────────
-// BINAIRES : yt-dlp et ffmpeg sont trouvés ou INSTALLÉS AUTOMATIQUEMENT
-// (le bot ne dépend plus du Dockerfile : ça marche aussi sur Render "Node")
-// ───────────────────────────────────────────────────────────────
-const BIN_DIR = path.join(__dirname, 'bin');
-const YTDLP_LOCAL = path.join(BIN_DIR, 'yt-dlp');
-const YTDLP_FRAICHEUR_MS = 12 * 60 * 60 * 1000;   // on re-télécharge la dernière version toutes les 12 h
-const bin = { ytdlp: null, ffmpeg: null };
+const TMP_DIR = path.join(os.tmpdir(), 'titan-tmp');   // fichiers temporaires des vocaux
+const bin = { ffmpeg: null };
 let preparationBinaires = null;
 
 function commandeOk(cmd, args) {
@@ -529,190 +585,16 @@ function trouverFfmpeg() {
   return null;
 }
 
-function nomBinaireYtDlp() {
-  const arm = process.arch === 'arm64';
-  const musl = fs.existsSync('/lib/ld-musl-x86_64.so.1') || fs.existsSync('/lib/ld-musl-aarch64.so.1');
-  if (musl) return arm ? 'yt-dlp_musllinux_aarch64' : 'yt-dlp_musllinux';
-  return arm ? 'yt-dlp_linux_aarch64' : 'yt-dlp_linux';
-}
-
-async function telechargerYtDlp() {
-  fs.mkdirSync(BIN_DIR, { recursive: true });
-  const tmp = YTDLP_LOCAL + '.part';
-  // 1) binaire autonome (aucune dépendance) ; 2) à défaut, script Python (nécessite python3)
-  for (const nom of [nomBinaireYtDlp(), 'yt-dlp']) {
-    try {
-      console.log(`[YT] ⬇️ Installation de yt-dlp (${nom})…`);
-      const rep = await axios.get(`https://github.com/yt-dlp/yt-dlp/releases/latest/download/${nom}`, {
-        responseType: 'stream', timeout: 90000, maxRedirects: 8, headers: { 'User-Agent': UA }
-      });
-      await new Promise((ok, ko) => {
-        const w = fs.createWriteStream(tmp);
-        rep.data.on('error', ko);
-        w.on('error', ko);
-        w.on('finish', ok);
-        rep.data.pipe(w);
-      });
-      fs.chmodSync(tmp, 0o755);
-      if (!commandeOk(tmp, ['--version'])) throw new Error('le fichier téléchargé ne démarre pas');
-      fs.renameSync(tmp, YTDLP_LOCAL);
-      console.log('[YT] ✅ yt-dlp installé');
-      return YTDLP_LOCAL;
-    } catch (e) {
-      console.error(`[YT] ⚠️ Installation de ${nom} impossible : ${e && e.message ? e.message : e}`);
-      try { fs.unlinkSync(tmp); } catch (e2) {}
-    }
-  }
-  return null;
-}
-
 function preparerBinaires() {
   if (preparationBinaires) return preparationBinaires;
   preparationBinaires = (async () => {
     bin.ffmpeg = trouverFfmpeg();
-
-    const imposé = (process.env.YTDLP_PATH || '').trim();
-    if (imposé && commandeOk(imposé, ['--version'])) {
-      bin.ytdlp = imposé;
-    } else {
-      const present = fs.existsSync(YTDLP_LOCAL);
-      const frais = present && (Date.now() - fs.statSync(YTDLP_LOCAL).mtimeMs) < YTDLP_FRAICHEUR_MS;
-      if (frais && commandeOk(YTDLP_LOCAL, ['--version'])) bin.ytdlp = YTDLP_LOCAL;
-      else bin.ytdlp = await telechargerYtDlp()
-        || (present && commandeOk(YTDLP_LOCAL, ['--version']) ? YTDLP_LOCAL : null)
-        || (commandeOk('yt-dlp', ['--version']) ? 'yt-dlp' : null);
-    }
-    console.log(`[YT] yt-dlp : ${bin.ytdlp || 'INTROUVABLE'} | ffmpeg : ${bin.ffmpeg || 'INTROUVABLE'}`);
-    if (!bin.ytdlp) preparationBinaires = null;   // on réessaiera à la prochaine commande
+    console.log(`[AUDIO] ffmpeg : ${bin.ffmpeg || 'INTROUVABLE'}`);
+    if (!bin.ffmpeg) preparationBinaires = null;   // on réessaiera à la prochaine commande
   })();
   return preparationBinaires;
 }
-preparerBinaires().catch(e => console.error('[YT] ⚠️ Préparation des binaires :', e && e.message ? e.message : e));
-
-function extraireLienYoutube(texte) {
-  const m = (texte || '').match(/https?:\/\/[^\s]+/i);
-  if (!m) return null;
-  try {
-    const u = new URL(m[0]);
-    const hote = u.hostname.replace(/^(www\.|m\.|music\.)/, '');
-    if (hote === 'youtube.com' || hote === 'youtu.be') return u.href;
-  } catch (e) {}
-  return null;
-}
-
-function lancerYtDlp(args, timeoutMs) {
-  return new Promise(async (resolve, reject) => {
-    try { await preparerBinaires(); } catch (e) {}
-    if (!bin.ytdlp) return reject(new Error('YTDLP_ABSENT'));
-    const base = ['--no-warnings', '--no-playlist', '--js-runtimes', `node:${process.execPath}`,
-      '--cache-dir', path.join(os.tmpdir(), 'yt-dlp-cache')];
-    if (bin.ffmpeg && bin.ffmpeg !== 'ffmpeg') base.push('--ffmpeg-location', bin.ffmpeg);
-    if (YT_COOKIES && fs.existsSync(YT_COOKIES)) base.push('--cookies', YT_COOKIES);
-    const proc = spawn(bin.ytdlp, [...base, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
-    let out = '', err = '';
-    const minuteur = setTimeout(() => { proc.kill('SIGKILL'); reject(new Error('TIMEOUT')); }, timeoutMs);
-    proc.stdout.on('data', d => { out += d; if (out.length > 5e6) out = out.slice(-5e6); });
-    proc.stderr.on('data', d => { err += d; if (err.length > 2e4) err = err.slice(-2e4); });
-    proc.on('error', e => { clearTimeout(minuteur); reject(e.code === 'ENOENT' ? new Error('YTDLP_ABSENT') : e); });
-    proc.on('close', code => {
-      clearTimeout(minuteur);
-      code === 0 ? resolve(out) : reject(new Error(err.trim().split('\n').pop() || `yt-dlp code ${code}`));
-    });
-  });
-}
-
-function messageErreurYoutube(e) {
-  const m = (e && e.message) || '';
-  if (m === 'YTDLP_ABSENT') return "⚠️ yt-dlp n'a pas pu être installé sur le serveur (GitHub injoignable ?). Réessaie dans une minute.";
-  if (m === 'FFMPEG_ABSENT') return "⚠️ ffmpeg est introuvable sur le serveur (lance `npm install` pour installer ffmpeg-static).";
-  if (m === 'TIMEOUT') return '⏱️ Le téléchargement a pris trop de temps, réessaie avec une vidéo plus courte.';
-  if (m === 'TROP_LONG') return `⚠️ Vidéo trop longue (maximum ${Math.round(YT_MAX_DUREE_S / 60)} min).`;
-  if (m === 'TROP_LOURD') return `⚠️ Fichier trop lourd pour WhatsApp (maximum ${Math.round(YT_MAX_OCTETS / 1048576)} Mo). Essaie plutôt en MP3.`;
-  if (/confirm you.?re not a bot|Sign in/i.test(m)) return "⚠️ YouTube bloque le serveur (détection anti-robot). Il faut ajouter un fichier de cookies (variable YT_COOKIES_FILE).";
-  if (/Private video|unavailable|removed|not available|\bage\b|inappropriate/i.test(m)) return "⚠️ Cette vidéo est privée, indisponible ou réservée aux adultes.";
-  return '⚠️ Impossible de télécharger cette vidéo pour le moment.';
-}
-
-async function telechargerYoutube(url, format) {
-  fs.mkdirSync(YT_DIR, { recursive: true });
-  const id = crypto.randomBytes(6).toString('hex');
-
-  // 1) infos (titre, durée) avant de télécharger quoi que ce soit
-  const infos = JSON.parse(await lancerYtDlp(['--skip-download', '--dump-single-json', '--', url], 60000));
-  if (infos.duration && infos.duration > YT_MAX_DUREE_S) throw new Error('TROP_LONG');
-
-  // 2) téléchargement (ffmpeg obligatoire : conversion MP3 et fusion vidéo+audio)
-  if (!bin.ffmpeg) throw new Error('FFMPEG_ABSENT');
-  const modele = path.join(YT_DIR, `${id}.%(ext)s`);
-  const args = ['-o', modele, '--max-filesize', `${Math.round(YT_MAX_OCTETS / 1048576)}M`];
-  if (format === 'mp3') {
-    args.push('-x', '--audio-format', 'mp3', '--audio-quality', '5');
-  } else {
-    const h = YT_MAX_HAUTEUR;
-    args.push('-f', `bv*[vcodec^=avc1][height<=${h}]+ba[ext=m4a]/b[ext=mp4][height<=${h}]/b[height<=${h}]`, '--merge-output-format', 'mp4');
-  }
-  await lancerYtDlp([...args, '--', url], 5 * 60 * 1000);
-
-  const fichier = fs.readdirSync(YT_DIR).find(f => f.startsWith(id + '.') && (f.endsWith('.mp3') || f.endsWith('.mp4')));
-  if (!fichier) throw new Error('fichier introuvable après téléchargement');
-  const chemin = path.join(YT_DIR, fichier);
-  if (fs.statSync(chemin).size > YT_MAX_OCTETS) { fs.unlink(chemin, () => {}); throw new Error('TROP_LOURD'); }
-  return { chemin, titre: infos.title || 'YouTube', auteur: infos.uploader || '', duree: infos.duration || 0 };
-}
-
-function lienDepuisMessage(msg, argTexte) {
-  let url = extraireLienYoutube(argTexte);
-  if (url) return url;
-  const { content } = deballerMessage(msg.message);
-  const cite = content && content.extendedTextMessage && content.extendedTextMessage.contextInfo && content.extendedTextMessage.contextInfo.quotedMessage;
-  if (cite) return extraireLienYoutube(cite.conversation || (cite.extendedTextMessage && cite.extendedTextMessage.text) || '');
-  return null;
-}
-
-async function commandeYoutube(sock, msg, remoteJid, senderJid, cleanText) {
-  const repondre = (texte) => envoyerAvecDelai(sock, remoteJid, { text: texte }, { quoted: msg }, 'texte');
-  const [cmd, ...reste] = cleanText.trim().split(/\s+/);
-  const commande = cmd.toLowerCase();
-  const cle = `${remoteJid}|${senderJid}`;
-  let url = lienDepuisMessage(msg, reste.join(' '));
-
-  // .yt [lien] → on garde le lien en attente et on demande le format
-  if (commande === '.yt') {
-    if (!url) return repondre("📥 Envoie un lien YouTube :\n`.yt https://youtu.be/xxxx`\n(ou réponds à un message contenant le lien avec `.yt`)");
-    ytAttente.set(cle, { url, expire: Date.now() + YT_ATTENTE_MS });
-    return repondre("📥 *Que veux-tu ?*\n🎬 `.mp4` → la vidéo\n🎵 `.mp3` → le son seulement\n_(choix valable 2 minutes)_");
-  }
-
-  const format = commande === '.mp3' ? 'mp3' : 'mp4';
-  if (!url) {
-    const attente = ytAttente.get(cle);
-    if (attente && attente.expire > Date.now()) url = attente.url;
-  }
-  if (!url) return repondre(`📥 Donne-moi un lien YouTube :\n\`${commande} https://youtu.be/xxxx\`\nou utilise d'abord \`.yt [lien]\``);
-  ytAttente.delete(cle);
-
-  if (ytOccupe) return repondre('⏳ Un téléchargement est déjà en cours, réessaie dans un instant.');
-  ytOccupe = true;
-  let fichier = null;
-  try {
-    await repondre(format === 'mp3' ? '🎵 Téléchargement du MP3 en cours…' : '🎬 Téléchargement de la vidéo en cours…');
-    const r = await telechargerYoutube(url, format);
-    fichier = r.chemin;
-    const legende = `${format === 'mp3' ? '🎵' : '🎬'} *${r.titre}*${r.auteur ? `\n👤 ${r.auteur}` : ''}`;
-    if (format === 'mp3') {
-      await envoyerAvecDelai(sock, remoteJid, { text: legende }, { quoted: msg }, 'texte');
-      await envoyerAvecDelai(sock, remoteJid, { audio: { url: fichier }, mimetype: 'audio/mpeg', ptt: false, fileName: `${r.titre}.mp3` }, {}, 'media');
-    } else {
-      await envoyerAvecDelai(sock, remoteJid, { video: { url: fichier }, caption: legende, mimetype: 'video/mp4' }, { quoted: msg }, 'media');
-    }
-  } catch (e) {
-    console.error(`[YT] ❌ ${e && e.message ? e.message : e}`);
-    await repondre(messageErreurYoutube(e));
-  } finally {
-    ytOccupe = false;
-    if (fichier) fs.unlink(fichier, () => {});
-  }
-}
+preparerBinaires().catch(e => console.error('[AUDIO] ⚠️ Préparation de ffmpeg :', e && e.message ? e.message : e));
 
 // 🎙️ ═══════════════════════════════════════════════════════════
 // .voc [texte] → le bot répond en VOCAL avec une voix d'homme grave et posée
@@ -759,9 +641,9 @@ async function ttsGoogle(morceau) {
 }
 
 // Secours si le service en ligne est injoignable : espeak-ng (installé par le Dockerfile)
-function ttsEspeak(texte) {
+function ttsEspeak(texte, voix = 'fr+m3', vitesse = 120) {
   return new Promise((resolve, reject) => {
-    const p = spawn('espeak-ng', ['-v', 'fr+m3', '-s', '120', '--stdout', texte], { stdio: ['ignore', 'pipe', 'ignore'] });
+    const p = spawn('espeak-ng', ['-v', voix, '-s', String(vitesse), '--stdout', texte], { stdio: ['ignore', 'pipe', 'ignore'] });
     const morceaux = [];
     p.stdout.on('data', d => morceaux.push(d));
     p.on('error', reject);
@@ -793,10 +675,10 @@ async function dureeAudioSecondes(chemin) {
 
 // Texte → fichier .ogg (opus) à voix d'homme grave et lente
 async function fabriquerVocalGrave(texte) {
-  fs.mkdirSync(YT_DIR, { recursive: true });
+  fs.mkdirSync(TMP_DIR, { recursive: true });
   const id = 'voc-' + crypto.randomBytes(6).toString('hex');
-  const entree = path.join(YT_DIR, id + '.in');
-  const sortie = path.join(YT_DIR, id + '.ogg');
+  const entree = path.join(TMP_DIR, id + '.in');
+  const sortie = path.join(TMP_DIR, id + '.ogg');
   try {
     let audio;
     try {
@@ -861,10 +743,107 @@ async function commandeVoc(sock, msg, remoteJid, cleanText) {
     console.error(`[VOC] ❌ ${e && e.message ? e.message : e}`);
     arreterComposing(sock, remoteJid);
     await repondre(e && e.message === 'FFMPEG_ABSENT'
-      ? messageErreurYoutube(e)
+      ? "⚠️ ffmpeg est introuvable sur le serveur (lance `npm install` pour installer ffmpeg-static)."
       : "⚠️ Je n'ai pas réussi à fabriquer le vocal pour le moment, réessaie dans un instant.");
   } finally {
     vocOccupe = false;
+  }
+}
+
+// 🎙️ ═══════════════════════════════════════════════════════════
+// .voc-f [texte] → comme .voc, mais avec une voix de FEMME (plus aiguë, claire, bien audible)
+// La commande tapée est supprimée et le vocal part comme si c'était toi : aucune réponse du bot
+// ═══════════════════════════════════════════════════════════
+const VOCF_MAX_CARACTERES = parseInt(process.env.VOCF_MAX_CAR, 10) || VOC_MAX_CARACTERES;
+// 1 = voix normale ; plus grand = plus aiguë (1.22 ≈ voix de femme bien aiguë et audible)
+const VOCF_AIGU = Math.min(1.3, Math.max(1, parseFloat(process.env.VOCF_AIGU) || 1.22));
+// 1 = vitesse normale ; 0.95 = posée et bien articulée
+const VOCF_VITESSE = Math.min(1.1, Math.max(0.6, parseFloat(process.env.VOCF_VITESSE) || 0.95));
+
+// Texte → fichier .ogg (opus) à voix de femme, cadence maîtrisée
+async function fabriquerVocalFemme(texte) {
+  fs.mkdirSync(TMP_DIR, { recursive: true });
+  const id = 'vocf-' + crypto.randomBytes(6).toString('hex');
+  const entree = path.join(TMP_DIR, id + '.in');
+  const sortie = path.join(TMP_DIR, id + '.ogg');
+  try {
+    let audio;
+    try {
+      const morceaux = [];
+      for (const m of decouperTexte(texte)) morceaux.push(await ttsGoogle(m));
+      audio = Buffer.concat(morceaux);
+    } catch (e) {
+      console.error(`[VOC-F] ⚠️ Service vocal en ligne indisponible (${e && e.message ? e.message : e}) → essai espeak-ng`);
+      audio = await ttsEspeak(texte, 'fr+f3', 130);   // voix féminine d'espeak-ng
+    }
+    fs.writeFileSync(entree, audio);
+
+    // monter la hauteur (×VOCF_AIGU) puis corriger la vitesse pour garder le rythme voulu
+    const tempo = Math.min(2, Math.max(0.5, VOCF_VITESSE / VOCF_AIGU));
+    const filtre = [
+      'aresample=48000',
+      `asetrate=${Math.round(48000 * VOCF_AIGU)}`,
+      'aresample=48000',
+      `atempo=${tempo.toFixed(3)}`,
+      'highpass=f=150',                                // retire le grondement
+      'equalizer=f=3000:width_type=o:width=1.2:g=3',   // présence : la voix ressort mieux
+      'dynaudnorm=f=150:g=6',                          // volume régulier et bien audible
+      'alimiter=limit=0.92'
+    ].join(',');
+    await lancerFfmpeg(['-i', entree, '-vn', '-af', filtre, '-ac', '1', '-ar', '48000', '-c:a', 'libopus', '-b:a', '40k', '-f', 'ogg', sortie]);
+    const buffer = fs.readFileSync(sortie);
+    const secondes = await dureeAudioSecondes(sortie);
+    return { buffer, secondes };
+  } finally {
+    fs.unlink(entree, () => {});
+    fs.unlink(sortie, () => {});
+  }
+}
+
+async function commandeVocF(sock, msg, remoteJid, cleanText) {
+  const estMoi = !!(msg.key && msg.key.fromMe);
+  let commandeEffacee = false;
+  // Supprime la commande tapée par toi : personne ne voit comment le vocal a été lancé
+  const effacerCommande = async () => {
+    if (!estMoi || commandeEffacee) return;
+    commandeEffacee = true;
+    try { await sock.sendMessage(remoteJid, { delete: msg.key }); }
+    catch (e) { console.error(`[VOC-F] ⚠️ Suppression de la commande impossible : ${e && e.message ? e.message : e}`); }
+  };
+
+  let texte = cleanText.replace(/^\.voc-f\s*/i, '').trim();
+
+  // sans texte : on lit le message auquel on répond
+  if (!texte) {
+    const { content } = deballerMessage(msg.message);
+    const cite = content && content.extendedTextMessage && content.extendedTextMessage.contextInfo && content.extendedTextMessage.contextInfo.quotedMessage;
+    if (cite) texte = (cite.conversation || (cite.extendedTextMessage && cite.extendedTextMessage.text) || (cite.imageMessage && cite.imageMessage.caption) || '').trim();
+  }
+
+  // Rien à dire ou texte trop long : on efface la commande, sans aucune réponse du bot
+  if (!texte) { await effacerCommande(); return; }
+  if (texte.length > VOCF_MAX_CARACTERES) {
+    console.log(`[VOC-F] ⚠️ Texte trop long (${texte.length} caractères, maximum ${VOCF_MAX_CARACTERES})`);
+    await effacerCommande();
+    return;
+  }
+
+  try {
+    await preparerBinaires();
+    if (!bin.ffmpeg) throw new Error('FFMPEG_ABSENT');
+    const { buffer, secondes } = await fabriquerVocalFemme(texte);
+    await effacerCommande();
+    // envoyé sans citation (le message cité par la commande n'existe plus), comme un vocal de ta part
+    await envoyerAvecDelai(sock, remoteJid, {
+      audio: buffer,
+      mimetype: 'audio/ogg; codecs=opus',
+      ptt: true,
+      ...(secondes ? { seconds: secondes } : {})
+    }, {}, 'media');
+  } catch (e) {
+    console.error(`[VOC-F] ❌ ${e && e.message ? e.message : e}`);
+    arreterComposing(sock, remoteJid);
+    await effacerCommande();
   }
 }
 
@@ -874,7 +853,7 @@ const CATEGORIES_MENU = [
     id: 'identite', emoji: '🏷️', titre: 'Identité & Compte',
     cmds: [
       { noms: ['.inscrire'], args: '[Nom]', desc: 'Enregistrer ton pass VIP' },
-      { noms: ['.pseudo'], args: '[Nom]', desc: 'Customiser ton blaze' },
+      { noms: ['.blaze'], args: '[Nom]', desc: 'Customiser ton blaze' },
       { noms: ['.fiche', '.rang'], desc: 'Consulter ta carte & ton grade' }
     ]
   },
@@ -894,15 +873,13 @@ const CATEGORIES_MENU = [
     id: 'outils', emoji: '🛠️', titre: 'Outils & Tech',
     cmds: [
       { groupe: '📸 Médias', noms: ['.v'], desc: 'Revoir une photo / vidéo / vocal en vue unique' },
-      { groupe: '📥 Téléchargement', noms: ['.yt'], args: '[lien YouTube]', desc: 'Choisir : vidéo (.mp4) ou audio (.mp3)' },
-      { groupe: '📥 Téléchargement', noms: ['.mp3'], args: '[lien YouTube]', desc: 'Télécharger le son en MP3' },
-      { groupe: '📥 Téléchargement', noms: ['.mp4'], args: '[lien YouTube]', desc: 'Télécharger la vidéo en MP4' },
       { groupe: '📸 Médias', noms: ['.pp', '.p'], aff: '.pp', args: '[@mention]', desc: "Photo de profil" },
       { groupe: '📸 Médias', noms: ['pipi'], args: '[@mention]', desc: "Photo de profil (pipi)" },
       { groupe: '📸 Médias', noms: ['.qr'], args: '[texte]', desc: 'Générer un QR code' },
       { groupe: '📸 Médias', noms: ['.image', '.img'], args: '[mot-clé]', desc: "Image sur n'importe quel sujet (Google / web)" },
       { groupe: '📸 Médias', noms: ['.imagine', '.gen'], aff: '.imagine', args: '[description]', desc: "Image créée par l'IA" },
       { groupe: '📸 Médias', noms: ['.voc'], args: '[texte]', desc: "Je dis ton texte en vocal (voix d'homme grave)" },
+      { groupe: '📸 Médias', noms: ['.voc-f'], args: '[texte]', desc: "Je dis ton texte en vocal (voix de femme)" },
       { groupe: '🌐 Utilitaires', noms: ['.translate', '.trad'], args: '[lang] [texte]', desc: 'Traduire un texte' },
       { groupe: '🌐 Utilitaires', noms: ['.dico', '.def', '.dictionnaire'], aff: '.dico', args: '[mot]', desc: 'Dictionnaire en ligne' },
       { groupe: '🌐 Utilitaires', noms: ['ret'], args: '[phrase] (nombre)', desc: 'Répéter une phrase', test: t => t.startsWith('ret ') },
@@ -917,32 +894,12 @@ const CATEGORIES_MENU = [
       { groupe: '🎭 Fun & Social', noms: ['.dec', '.mensonge'], args: '[texte]', desc: 'Détecteur de mensonges' },
       { groupe: '🎭 Fun & Social', noms: ['drague', '.drague'], aff: 'drague', args: '[@mention] (nombre)', desc: 'Phrases de drague (1 toutes les 8 s)' }
     ]
-  },
-  {
-    id: 'jeux', emoji: '🎮', titre: 'Zone de Combat (Jeux)',
-    cmds: [
-      { noms: ['.bombe'], exact: true, desc: 'Désamorçage tactique' },
-      { noms: ['.de'], exact: true, desc: 'Le jet de dés' },
-      { noms: ['.lab'], args: '[solo|duo|equipe]', desc: 'Labyrinthe' },
-      { noms: ['.feurouge'], exact: true, desc: 'Squid Game' },
-      { noms: ['.chiffremystere'], exact: true, desc: 'Chiffre mystère' },
-      { noms: ['.pf', '.pileouface'], exact: true, aff: '.pf', desc: 'Pile ou face' }
-    ]
-  },
-  {
-    id: 'equipe', emoji: '⚙️', titre: "Gestion d'Équipe",
-    cmds: [
-      { noms: ['.joindre'], args: '[A/B]', desc: 'Rejoindre une équipe' },
-      { noms: ['.lancer'], exact: true, desc: 'Activer le protocole' },
-      { noms: ['.restart'], exact: true, desc: 'Relancer le round' },
-      { noms: ['.stop'], exact: true, desc: 'Couper la session' }
-    ]
   }
 ];
 
 const MENU_REGEX = /^(\.menu|menu|\.help|\.aide)(?:\s+(.+)|(\d+))?$/;
 const NUM_EMOJIS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣'];
-const EMOJIS_REACTION = ['🤬', '☠️', '👿', '🖕', '🤦', '🙅'];
+const EMOJIS_REACTION = ['😌', '💅', '🗿', '🧼', '🤦', '🫶', '🤳', '🎗️'];
 
 function normaliserTexte(s) {
   return (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
@@ -1102,15 +1059,27 @@ function construireMenu(texte, nom) {
 
 // 🖼️ Envoie le menu avec son image (la légende WhatsApp est limitée : si le menu est trop long, image puis texte)
 async function envoyerMenu(sock, remoteJid, msg, resultat) {
-  const image = choisirImageMenu(resultat.cat);
-  if (!image) {
+  // 🎲 Tirage aléatoire parmi les images ET la vidéo (si media/menu.mp4 existe)
+  const medias = [
+    ...MENU_IMAGES.map(buffer => ({ type: 'image', buffer })),
+    ...(MENU_VIDEO ? [{ type: 'video', buffer: MENU_VIDEO }] : [])
+  ];
+  if (!medias.length) {
     return envoyerAvecDelai(sock, remoteJid, { text: resultat.texte }, { quoted: msg }, 'menu');
   }
-  if (resultat.texte.length <= 1000) {
-    return envoyerAvecDelai(sock, remoteJid, { image, caption: resultat.texte }, { quoted: msg }, 'media');
+
+  const media = alea(medias);
+  const court = resultat.texte.length <= 1000;
+  const legende = court ? resultat.texte : '⚡ *TITAN BOT* ⚡';
+
+  const contenu = media.type === 'video'
+    ? { video: media.buffer, gifPlayback: true, caption: legende }
+    : { image: media.buffer, caption: legende };
+
+  await envoyerAvecDelai(sock, remoteJid, contenu, { quoted: msg }, 'media');
+  if (!court) {
+    return envoyerAvecDelai(sock, remoteJid, { text: resultat.texte }, {}, 'media');
   }
-  await envoyerAvecDelai(sock, remoteJid, { image, caption: '⚡ *TITAN BOT* ⚡' }, { quoted: msg }, 'media');
-  return envoyerAvecDelai(sock, remoteJid, { text: resultat.texte }, {}, 'media');
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1136,25 +1105,25 @@ const mariages = new Map(); // jid -> { conjoint, ts, lieu }
 
 const LIEUX_MARIAGE = [
   "sous le grand manguier du quartier 🥭", "dans un maquis, ambiance garantie 🍗", "au bord de la lagune 🌊",
-  "au terrain de foot du quartier ⚽", "dans le groupe WhatsApp, devant tous les témoins 📱",
+  "au lycée", "dans le groupe WhatsApp, devant tous les témoins 📱",
   "chez maman, avec sa bénédiction 🏠", "sur le toit d'un immeuble, vue sur la ville 🌇", "à la mairie du cœur 🏛️"
 ];
 const CELEBRANTS = [
-  "Maître Titan, officier d'état civil 🤖", "le chef du quartier 🧓", "le DJ de la cérémonie 🎧",
-  "ton grand frère, très ému 🥹", "Maître Botti, avocat des cœurs brisés ⚖️"
+  "Mr Alloh", "Azo", "le DJ de la cérémonie 🎧",
+  "L'ex très jaloux", "Saïtama⚡🔥💯"
 ];
 const TEMOINS = [
   "le chat du voisin 🐈", "un vendeur d'alloco 🍌", "le gardien de l'immeuble 💂",
-  "tout le groupe, venu pour la bouffe 🍛", "la tantie du coin, qui sait tout 👵"
+  "gardien du lycée", "la tantie du coin, qui sait tout 👵", "personne😌💅"
 ];
 const CADEAUX_MARIAGE = [
   "un ventilateur qui fait un peu de bruit 🌀", "un casier de jus de bissap 🧃", "une grande marmite 🍲",
-  "12 paires de chaussettes 🧦", "un pagne assorti 👘", "un sachet de piment 🌶️",
-  "un abonnement WiFi (le mot de passe est dans la cuisine) 📶"
+  "Un itel A16 1Go ram", "un chocoto noir😸", "un sachet de piment 🌶️",
+  "ballon d'or"
 ];
 const LUNES_DE_MIEL = [
-  "Grand-Bassam 🏖️", "Assinie 🌴", "Yamoussoukro 🏛️", "San-Pédro 🌊", "Bouaké 🚌",
-  "la cuisine, pour manger ensemble 🍽️", "le salon, parce que la caisse est vide 🛋️", "Paris (sur Google Maps) 🗼"
+  "Grand-Bassam 🏖️", "Assinie 🌴", "Yamoussoukro 🏛️", "Dans la chambre", "Nul part y'a pas djai🥲😭",
+  "Au guétho", "chez les voisins qui est l'ex jaloux🤣", "Paris (sur Google Maps) 🗼"
 ];
 const DOMICILES = [
   "un studio avec WiFi 📶", "chez la belle-mère 👵 (courage)", "une chambre-salon sans clim 🥵",
@@ -1375,7 +1344,7 @@ async function commandeHack(sock, msg, remoteJid, senderJid, isGroup, cleanText)
 💬 *Dernier message envoyé :* ${alea(DERNIERS_MESSAGES_HACK)}
 🕵️ *Niveau de danger :* ${entierAlea(1, 100)}/100
 ━━━━━━━━━━━━━━━
-😂 _Tout est inventé, c'est juste pour rire !_`;
+😂 _Amusement à part c'est réel hyn🥲_`;
       const final = await sock.sendMessage(remoteJid, { text: rapport, mentions }, { quoted: msg });
       if (final?.key?.id) processedMessages.add(final.key.id);
     } catch (err) {
@@ -1592,8 +1561,8 @@ async function commandeImage(sock, msg, remoteJid, cleanText, genererSeulement) 
   let buffer = null;
   let source = '';
   const etapes = genererSeulement
-    ? [['🎨 Image générée par IA', imageGeneree]]
-    : [['🌐 Google Images', imageGoogle], ['📷 Photo libre de droits', imageOpenverse], ['🎨 Image générée par IA', imageGeneree]];
+    ? [['🎨 Image volée sur internet🤣🤣🤣', imageGeneree]]
+    : [["Chat GPT c'est mon petit c'est lui qui fait tous mes wé et puis il est au chômage pour compléter 🤣😌", imageGoogle], ["De la mm maniere tu as ces photos 😌 moi aussi j'ai des photos de toi 👁️👁️👄💅", imageOpenverse], ['Genéree par mon petit Chat GPT 😌💅', imageGeneree]];
 
   for (const [nomSource, fonction] of etapes) {
     try {
@@ -1605,7 +1574,7 @@ async function commandeImage(sock, msg, remoteJid, cleanText, genererSeulement) 
     if (buffer) { source = nomSource; break; }
   }
 
-  if (!buffer) return rep(`😕 Je n'ai rien trouvé pour « ${q} ». Réessaie dans un instant ou avec un autre mot.`);
+  if (!buffer) return rep(`Bon toi mm là c'est quelle recherche ça là genre tu me vois en quoi mm 🤦🏼‍♀️ « ${q} ». Faut réessayer plus tard vilain là 💅`);
   return envoyerAvecDelai(sock, remoteJid, { image: buffer, caption: `🔍 *${q}*\n${source}` }, { quoted: msg }, 'media');
 }
 
@@ -1721,6 +1690,17 @@ async function startBot() {
 
   sock.ev.on('creds.update', saveCreds);
 
+  // 🏷️ Noms pour les logs : contacts enregistrés dans le téléphone et sujets des groupes
+  sock.ev.on('contacts.upsert', (liste) => liste.forEach(memoriserContact));
+  sock.ev.on('contacts.update', (liste) => liste.forEach(memoriserContact));
+  sock.ev.on('messaging-history.set', ({ contacts }) => (contacts || []).forEach(memoriserContact));
+  sock.ev.on('groups.upsert', (liste) => liste.forEach(g => {
+    if (g.id) groupesConnus.set(g.id, { nom: g.subject || 'Groupe sans nom', expire: Date.now() + DUREE_CACHE_GROUPE_MS });
+  }));
+  sock.ev.on('groups.update', (liste) => liste.forEach(g => {
+    if (g.id && g.subject) groupesConnus.set(g.id, { nom: g.subject, expire: Date.now() + DUREE_CACHE_GROUPE_MS });
+  }));
+
   // 👁️ Vue unique : listener dédié[span_4](start_span)[span_4](end_span)
   installerVueUnique(sock);
 
@@ -1770,35 +1750,47 @@ async function startBot() {
     }, 6000);
   }
 
-  // 🛡 DÉTECTION DES MESSAGES SUPPRIMÉS (ANTI-DELETE)[span_5](start_span)[span_5](end_span)
+  // 🛡 DÉTECTION DES MESSAGES SUPPRIMÉS (ANTI-DELETE)
+  // Les messages que TOI (le compte du bot) supprimes ne sont jamais renvoyés : seulement ceux des autres.
   sock.ev.on('messages.update', async (updates) => {
     for (const update of updates) {
-      if (update.update && update.update.message === null || update.update?.protocolMessage?.type === 0) {
-        const deletedId = update.key.id;
-        const cachedMsg = messageCache[deletedId];
+      const estSupprime = (update.update && update.update.message === null) || update.update?.protocolMessage?.type === 0;
+      if (!estSupprime) continue;
 
-        if (cachedMsg) {
-          const remoteJid = update.key.remoteJid;
-          const sender = cachedMsg.sender;
-          const senderName = profilsJoueurs[sender] || `@${sender.split('@')[0]}`;
-          
-          let alertText = `🚨 *ANTI-DELETE😌 : MESSAGE SUPPRIMÉ DÉTECTÉ ! T'ES SURPRIS 🤣* 🚨\n👤 *Auteur :* ${senderName}\n📅 *Date :* ${cachedMsg.fdate || 'Récemment'}\n`;
+      // 🚫 Suppression faite par toi
+      if (update.key.fromMe) continue;
 
-          if (cachedMsg.text) {
-            await sock.sendMessage(remoteJid, { 
-              text: `${alertText}\n💬 *Message :*\n${cachedMsg.text}`,
-              mentions: [sender]
-            });
-          } else if (cachedMsg.mediaMessage) {
-            const type = cachedMsg.mediaType;
-            const caption = cachedMsg.caption ? `\n📝 *Légende :* ${cachedMsg.caption}` : '';
-            await sock.sendMessage(remoteJid, { 
-              [type]: cachedMsg.buffer, 
-              caption: `${alertText}${caption}`,
-              mentions: [sender]
-            });
-          }
+      const deletedId = update.key.id;
+      const cachedMsg = messageCache[deletedId];
+      if (!cachedMsg) continue;
+
+      // 🚫 Message qui t'appartient (sécurité supplémentaire)
+      const botNumber = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+      if (cachedMsg.fromMe || cachedMsg.sender === botNumber) continue;
+
+      const remoteJid = update.key.remoteJid;
+      const sender = cachedMsg.sender;
+      const senderName = profilsJoueurs[sender] || `@${sender.split('@')[0]}`;
+
+      const alertText = `🚨 *ANTI-DELETE😌 : MESSAGE SUPPRIMÉ DÉTECTÉ ! T'ES SURPRIS 🤣* 🚨\n👤 *Auteur :* ${senderName}\n📅 *Date :* ${cachedMsg.fdate || 'Récemment'}\n`;
+
+      try {
+        if (cachedMsg.text) {
+          await sock.sendMessage(remoteJid, {
+            text: `${alertText}\n💬 *Message :*\n${cachedMsg.text}`,
+            mentions: [sender]
+          });
+        } else if (cachedMsg.mediaMessage) {
+          const type = cachedMsg.mediaType;
+          const caption = cachedMsg.caption ? `\n📝 *Légende :* ${cachedMsg.caption}` : '';
+          await sock.sendMessage(remoteJid, {
+            [type]: cachedMsg.buffer,
+            caption: `${alertText}${caption}`,
+            mentions: [sender]
+          });
         }
+      } catch (e) {
+        console.error('⚠️ Anti-delete : envoi impossible :', e && e.message ? e.message : e);
       }
     }
   });
@@ -1820,6 +1812,7 @@ async function startBot() {
       const senderJid = isGroup ? (msg.key.participant || remoteJid) : remoteJid;
 
       if (utilisateursMutes.has(senderJid)) {
+        await journaliserMessage(sock, msg, { muet: true });
         return; 
       }
 
@@ -1830,7 +1823,7 @@ async function startBot() {
       });
 
       const cleanTextLog = (msg.message.conversation || msg.message.extendedTextMessage?.text || "").trim();
-      console.log(`📩 [MSG] (${formattedDate}) De :${senderJid} | Groupe : ${isGroup} | Texte :${cleanTextLog}`);
+      await journaliserMessage(sock, msg);
 
       const botNumber = sock.user.id.split(':')[0] + '@s.whatsapp.net';
       const isFromBot = msg.key.fromMe || senderJid === botNumber;
@@ -1867,6 +1860,7 @@ async function startBot() {
           
           messageCache[messageId] = {
             sender: senderJid,
+            fromMe: !!msg.key.fromMe,
             mediaMessage: true,
             mediaType: 'image',
             buffer: buffer,
@@ -1877,6 +1871,7 @@ async function startBot() {
       } else if (textToCache) {
         messageCache[messageId] = {
           sender: senderJid,
+          fromMe: !!msg.key.fromMe,
           text: textToCache,
           fdate: formattedDate
         };
@@ -1913,11 +1908,11 @@ async function startBot() {
         if (lowerText === '.private on') {
           data.botPrivateMode = true;
           refusPriveDeja.clear();
-          await envoyerAvecDelai(sock, remoteJid, { text: "🔒 *Mode privé activé.*" }, { quoted: msg }, 'texte');
+          await envoyerAvecDelai(sock, remoteJid, { text: "🔒 *Je suis passé en mode privé\nFaut pas me deranger*👄" }, { quoted: msg }, 'texte');
         } else {
           data.botPrivateMode = false;
           refusPriveDeja.clear();
-          await envoyerAvecDelai(sock, remoteJid, { text: "🔓 *Mode privé désactivé.*" }, { quoted: msg }, 'texte');
+          await envoyerAvecDelai(sock, remoteJid, { text: "🔓 *Mode privé désactivé\nIls vont encore une fois abuser de moi 😭🤦🏼‍♀️*" }, { quoted: msg }, 'texte');
         }
         return;
       }
@@ -1934,7 +1929,7 @@ async function startBot() {
         } else if (!refusPriveDeja.has(senderJid)) {
           // Une seule fois par personne : ensuite silence total, même si elle insiste
           refusPriveDeja.add(senderJid);
-          await envoyerAvecDelai(sock, remoteJid, { text: "Je ne te répondrai pas, Andy est absent ❌." }, { quoted: msg }, 'texte');
+          await envoyerAvecDelai(sock, remoteJid, { text: "Je ne te répondrai pas\nje suis occupée 🧖🏼‍♀️🛀🏼💇🏼‍♀️" }, { quoted: msg }, 'texte');
         }
         return;
       }
@@ -2097,15 +2092,6 @@ async function startBot() {
         return;
       }
 
-      const jeu = partiesEnCours[remoteJid];
-      demarrerTimerInactivite(sock, remoteJid);
-
-      if (lowerText === '.pf' || lowerText === '.pileouface') {
-        const resultat = Math.random() < 0.5 ? "🪙 *PILE !*" : "🪙 *FACE !*";
-        await envoyerAvecDelai(sock, remoteJid, { text: resultat }, { quoted: msg }, 'texte');
-        return;
-      }
-
       if (/^\.(imagine|gen)(\s|$)/.test(lowerText)) {
         await commandeImage(sock, msg, remoteJid, cleanText, true);
         return;
@@ -2171,22 +2157,7 @@ async function startBot() {
           return;
         }
 
-        if (jeu && jeu.type === 'LABYRINTHE' && (jeu.niveau === 'duo' || jeu.niveau === 'equipe')) {
-          if (nomEntre.length < 2 || nomEntre.length > 5) {
-            await envoyerAvecDelai(sock, remoteJid, { text: `⚠️ Pour le mode ${jeu.niveau.toUpperCase()}, ton pseudo d'inscription doit contenir entre **2 et 5 lettres** maximum ! (Ex: Max, Eli)` }, { quoted: msg }, 'texte');
-            return;
-          }
-        }
-
         profilsJoueurs[senderJid] = nomEntre;
-
-        if (jeu && jeu.statut === 'INSCRIPTION') {
-          if (!jeu.joueurs.some(j => j.jid === senderJid)) {
-            jeu.joueurs.push({ jid: senderJid, nom: nomEntre, elimine: false, score: 0 });
-            await envoyerAvecDelai(sock, remoteJid, { text: `✅ *${nomEntre}* a rejoint la partie ! (${jeu.joueurs.length} inscrit(s))\nTapez \`.lancer\` quand vous êtes prêts.` }, { quoted: msg }, 'texte');
-            return;
-          }
-        }
 
         await envoyerAvecDelai(sock, remoteJid, { text: `🎉 *PROFIL ENREGISTRÉ !*\nBienvenue *${nomEntre}* !` }, { quoted: msg }, 'texte');
         return;
@@ -2202,8 +2173,8 @@ async function startBot() {
         return;
       }
 
-      if (/^\.(yt|mp3|mp4)(\s|$)/.test(lowerText)) {
-        await commandeYoutube(sock, msg, remoteJid, senderJid, cleanText);
+      if (/^\.voc-f(\s|$)/.test(lowerText)) {
+        await commandeVocF(sock, msg, remoteJid, cleanText);
         return;
       }
 
@@ -2236,419 +2207,11 @@ async function startBot() {
         return;
       }
 
-      if (lowerText === '.bombe') return declencherJeuBombe(sock, remoteJid, msg);
-      if (lowerText === '.de') return declencherJeuDe(sock, remoteJid, msg);
-      if (lowerText.startsWith('.lab')) return declencherJeuLabyrinthe(sock, remoteJid, msg, cleanText);
-      if (lowerText === '.feurouge') return declencherJeuFeuRouge(sock, remoteJid, msg, senderJid);
-      if (lowerText === '.chiffremystere') return declencherJeuChiffre(sock, remoteJid, msg, senderJid);
-
-      if (lowerText.startsWith('.joindre')) {
-        if (!jeu || jeu.statut !== 'INSCRIPTION') {
-          await envoyerAvecDelai(sock, remoteJid, { text: "⚠️ Aucune inscription ouverte en mode Équipe !" }, { quoted: msg }, 'texte');
-          return;
-        }
-
-        const eq = cleanText.replace(/^\.joindre\s*/i, '').trim().toUpperCase();
-        if (eq !== 'A' && eq !== 'B') {
-          await envoyerAvecDelai(sock, remoteJid, { text: "⚠️ Précisez une équipe : `.joindre A` ou `.joindre B`" }, { quoted: msg }, 'texte');
-          return;
-        }
-
-        const nomJ = profilsJoueurs[senderJid] || `@${senderJid.split('@')[0]}`;
-        if (!jeu.equipes) jeu.equipes = { A: [], B: [] };
-        jeu.equipes.A = jeu.equipes.A.filter(j => j.jid !== senderJid);
-        jeu.equipes.B = jeu.equipes.B.filter(j => j.jid !== senderJid);
-
-        jeu.equipes[eq].push({ jid: senderJid, nom: nomJ, elimine: false });
-        if (!jeu.joueurs.some(j => j.jid === senderJid)) {
-          jeu.joueurs.push({ jid: senderJid, nom: nomJ, elimine: false });
-        }
-
-        await envoyerAvecDelai(sock, remoteJid, { text: `✅ *${nomJ}* a rejoint l'*ÉQUIPE ${eq}* !\n\n🔴 Équipe A : ${jeu.equipes.A.length} | 🔵 Équipe B : ${jeu.equipes.B.length}` }, { quoted: msg }, 'texte');
-        return;
-      }
-
-      if (lowerText === '.restart') {
-        const dernierType = partiesEnCours[remoteJid]?.dernierType || 'DE';
-        reinitialiserJeu(remoteJid);
-        if (dernierType === 'BOMBE') return declencherJeuBombe(sock, remoteJid, msg);
-        if (dernierType === 'DE') return declencherJeuDe(sock, remoteJid, msg);
-        if (dernierType === 'LABYRINTHE') return declencherJeuLabyrinthe(sock, remoteJid, msg, '.lab solo');
-        if (dernierType === 'FEU_ROUGE') return declencherJeuFeuRouge(sock, remoteJid, msg, senderJid);
-        if (dernierType === 'CHIFFRE') return declencherJeuChiffre(sock, remoteJid, msg, senderJid);
-      }
-
-      if (lowerText === '.stop') {
-        reinitialiserJeu(remoteJid);
-        await envoyerAvecDelai(sock, remoteJid, { text: "🛑 *Partie annulée.* Tapez `.menu` pour relancer un jeu." }, { quoted: msg }, 'texte');
-        return;
-      }
-
-      if (lowerText === '.lancer') {
-        if (!jeu || jeu.statut !== 'INSCRIPTION') {
-          await envoyerAvecDelai(sock, remoteJid, { text: "⚠️ Aucun jeu en attente d'inscription à lancer !" }, { quoted: msg }, 'texte');
-          return;
-        }
-
-        if (jeu.joueurs.length === 0) {
-          const nomSolo = profilsJoueurs[senderJid] || "Joueur Solo";
-          jeu.joueurs.push({ jid: senderJid, nom: nomSolo, elimine: false, score: 0 });
-        }
-
-        jeu.statut = 'EN_COURS';
-
-        if (jeu.type === 'DE') {
-          let resultatText = `🎲 *RÉSULTATS DU JEU DE DÉ* 🎲\n\n`;
-          let meilleurScore = -1;
-          let gagnants = [];
-
-          const scoreBot = Math.floor(Math.random() * 6) + 1;
-          resultatText += `🤖 *Titan Bot* a obtenu : 🎲 *${scoreBot}*\n`;
-          meilleurScore = scoreBot;
-          gagnants = ["Titan Bot"];
-
-          jeu.joueurs.forEach(j => {
-            const tirage = Math.floor(Math.random() * 6) + 1;
-            resultatText += `👤 *${j.nom}* a obtenu : 🎲 *${tirage}*\n`;
-            if (tirage > meilleurScore) {
-              meilleurScore = tirage;
-              gagnants = [j.nom];
-            } else if (tirage === meilleurScore) {
-              gagnants.push(j.nom);
-            }
-          });
-
-          resultatText += `\n🏆 *Gagnant(s) (Score: ${meilleurScore}) :*${gagnants.join(', ')} 🎉`;
-          partiesEnCours[remoteJid] = { dernierType: 'DE' };
-          await envoyerAvecDelai(sock, remoteJid, { text: resultatText }, { quoted: msg }, 'texte');
-          return;
-        }
-
-        if (jeu.type === 'LABYRINTHE') {
-          if (jeu.niveau === 'duo' && jeu.joueurs.length < 2) {
-            await envoyerAvecDelai(sock, remoteJid, { text: "⚠️ Il faut exactement 2 joueurs inscrits pour le mode Duo !" }, { quoted: msg }, 'texte');
-            jeu.statut = 'INSCRIPTION';
-            return;
-          }
-          if (jeu.niveau === 'equipe' && jeu.joueurs.length < 3) {
-            await envoyerAvecDelai(sock, remoteJid, { text: "⚠️ Il faut au moins 3 joueurs inscrits pour le mode Équipe !" }, { quoted: msg }, 'texte');
-            jeu.statut = 'INSCRIPTION';
-            return;
-          }
-
-          jeu.ordreJoueurs = [...jeu.joueurs].sort(() => Math.random() - 0.5);
-          jeu.indexTour = 0;
-          jeu.étape = 0;
-
-          const premier = jeu.ordreJoueurs[0];
-          await envoyerAvecDelai(sock, remoteJid, { 
-            text: `🚪 *LABYRINTHE NIVEAU ${jeu.niveau.toUpperCase()} STARTED (10 Étapes)* 🚪\n\n` +
-                  `🎯 Tirage aléatoire effectué parmi les inscrits !\n` +
-                  `👉 C'est au tour de *${premier.nom}* de répondre à la 1ère étape !\n\n` +
-                  `📍 Commandes de direction : \`@gauche\`, \`@droite\`, \`@tout droit\`, \`@milieu\`, \`@secret\`` 
-          }, { quoted: msg }, 'texte');
-          return;
-        }
-
-        if (jeu.type === 'FEU_ROUGE') {
-          await envoyerAvecDelai(sock, remoteJid, { text: `🔴 *SQUID GAME DÉMARRE !*\n👥 *${jeu.joueurs.length} joueur(s)* sur la ligne de départ !\nPréparez-vous...` }, { quoted: msg }, 'texte');
-          setTimeout(() => lancerMancheFeuRouge(sock, remoteJid), 2000);
-          return;
-        }
-
-        if (jeu.type === 'CHIFFRE') {
-          let listStr = jeu.joueurs.map(j => `• ${j.nom}`).join('\n');
-          await envoyerAvecDelai(sock, remoteJid, { 
-            text: `🔢 *CHIFFRE MYSTÈRE (1-100) STARTED !*\n\n🎯 Participants :\n${listStr}\n\n👉 Le premier qui trouve gagne ! Écrivez un chiffre dans le tchat !` 
-          }, { quoted: msg }, 'texte');
-          return;
-        }
-
-        if (jeu.type === 'BOMBE') {
-          jeu.indexTour = 0;
-          const premier = jeu.joueurs[0];
-          await envoyerAvecDelai(sock, remoteJid, { 
-            text: `💣 *BOMBE DÉSAMORÇAGE STARTED !*\n\n👥 Joueurs : *${jeu.joueurs.length}*\n👉 C'est au tour de *${premier.nom}* de désamorcer !\n✂️ Tapez \`@rouge\`, \`@bleu\` ou \`@jaune\` ! (15s)` 
-          }, { quoted: msg }, 'texte');
-          demarrerChronoBombeGroupe(sock, remoteJid);
-          return;
-        }
-      }
-
-      if (jeu && jeu.statut === 'EN_COURS') {
-        if (jeu.type === 'BOMBE') {
-          const joueurActuel = jeu.joueurs[jeu.indexTour];
-          if (senderJid === joueurActuel.jid && (lowerText === '@rouge' || lowerText === '@bleu' || lowerText === '@jaune')) {
-            clearTimeout(jeu.timerBombe);
-            const filChoisi = lowerText.replace('@', '');
-
-            if (filChoisi === jeu.bonFil) {
-              partiesEnCours[remoteJid] = { dernierType: 'BOMBE' };
-              await envoyerAvecDelai(sock, remoteJid, { text: `🟢 *BOMBE DÉSAMORCÉE PAR ${joueurActuel.nom.toUpperCase()} !* 🟢\n\n✂️ Le fil *${filChoisi.toUpperCase()}* était le bon !\n🏆 Victoire ! 🎉\n🔄 Tapez *.restart* pour rejouer !` }, { quoted: msg }, 'texte');
-            } else {
-              joueurActuel.elimine = true;
-              const restants = jeu.joueurs.filter(j => !j.elimine);
-
-              if (restants.length === 0) {
-                partiesEnCours[remoteJid] = { dernierType: 'BOMBE' };
-                await envoyerAvecDelai(sock, remoteJid, { text: `💥 *BOOOOOOOM !* 💥\n\n*${joueurActuel.nom}* a coupé le mauvais fil (*${filChoisi.toUpperCase()}*). Le bon fil était *${jeu.bonFil.toUpperCase()}*.\n💀 Éliminé !\n🔄 Tapez *.restart* pour rejouer !` }, { quoted: msg }, 'texte');
-              } else {
-                jeu.indexTour = joueurSuivantBombe(jeu, jeu.indexTour);
-                const prochain = jeu.joueurs[jeu.indexTour];
-                await envoyerAvecDelai(sock, remoteJid, { text: `💥 *${joueurActuel.nom}* a sauté en coupant le fil *${filChoisi.toUpperCase()}* !\n\n👉 C'est à *${prochain.nom}* de choisir un fil !` }, { quoted: msg }, 'texte');
-                demarrerChronoBombeGroupe(sock, remoteJid);
-              }
-            }
-            return;
-          }
-        }
-
-        if (jeu.type === 'LABYRINTHE') {
-          const dirMap = { '@gauche': 'gauche', '@droite': 'droite', '@tout droit': 'tout droit', '@milieu': 'milieu', '@secret': 'secret' };
-          
-          if (dirMap[lowerText]) {
-            let joueurActuel;
-
-            if (jeu.niveau === 'solo') {
-              joueurActuel = jeu.ordreJoueurs[0];
-            } else {
-              joueurActuel = jeu.ordreJoueurs[jeu.indexTour];
-              if (senderJid !== joueurActuel.jid) {
-                await envoyerAvecDelai(sock, remoteJid, { text: `⏳ *Ce n'est pas ton tour !* C'est au tour de **${joueurActuel.nom}** de répondre selon le tirage aléatoire.` }, { quoted: msg }, 'texte');
-                return;
-              }
-            }
-
-            const dirChoisie = dirMap[lowerText];
-            const cheminActuel = CHEMINS_LABYRINTHE[jeu.indexChemin];
-            const bonneDirection = cheminActuel[jeu.étape] || 'gauche';
-            const subAmbiance = SUBS_LABYRINTHE[Math.floor(Math.random() * SUBS_LABYRINTHE.length)];
-
-            if (dirChoisie === bonneDirection) {
-              jeu.étape += 1;
-              if (jeu.étape >= 10) {
-                partiesEnCours[remoteJid] = { dernierType: 'LABYRINTHE' };
-                await envoyerAvecDelai(sock, remoteJid, { text: `🏆 *VICTOIRE ABSOLUE DU LABYRINTHE (${jeu.niveau.toUpperCase()}) !* 🏆\n\n🎉 Les 10 étapes ont été surmontées avec brio !\n🔄 Tapez *.restart* pour rejouer !` }, { quoted: msg }, 'texte');
-                return;
-              } else {
-                if (jeu.niveau !== 'solo') {
-                  jeu.indexTour = (jeu.indexTour + 1) % jeu.ordreJoueurs.length;
-                  const prochain = jeu.ordreJoueurs[jeu.indexTour];
-                  await envoyerAvecDelai(sock, remoteJid, { text: `✨ *${joueurActuel.nom}* a validé l'étape ${jeu.étape}/10 !\n👻 _${subAmbiance}_\n\n👉 Tirage au sort : c'est au tour de **${prochain.nom}** !` }, { quoted: msg }, 'texte');
-                } else {
-                  await envoyerAvecDelai(sock, remoteJid, { text: `✨ Étape ${jeu.étape}/10 validée !\n👻 _${subAmbiance}_\n\n👉 Continue à avancer !` }, { quoted: msg }, 'texte');
-                }
-              }
-            } else {
-              jeu.vie = Math.max(0, jeu.vie - 10);
-              
-              if (jeu.vie <= 0) {
-                partiesEnCours[remoteJid] = { dernierType: 'LABYRINTHE' };
-                await envoyerAvecDelai(sock, remoteJid, { text: `💀 Piège fatal déclenché par *${joueurActuel.nom}* ! Santé de l'équipe à 0%.\n\n💥 *GAME OVER (PERDU)* 💀\n🔄 Tapez *.restart* pour rejouer !` }, { quoted: msg }, 'texte');
-                return;
-              } else {
-                if (jeu.niveau !== 'solo') {
-                  jeu.indexTour = (jeu.indexTour + 1) % jeu.ordreJoueurs.length;
-                  const prochain = jeu.ordreJoueurs[jeu.indexTour];
-                  await envoyerAvecDelai(sock, remoteJid, { text: `❌ Erreur de *${joueurActuel.nom}* ! ⚠️ *-10 HP* pour toute l'équipe.\n❤️ Santé restante : ${genererBarreHP(jeu.vie, 100)}\n\n👉 Tirage au sort : c'est au tour de **${prochain.nom}** !` }, { quoted: msg }, 'texte');
-                } else {
-                  await envoyerAvecDelai(sock, remoteJid, { text: `❌ Mauvaise direction ! ⚠️ *-10 HP*.\n❤️ Santé : ${genererBarreHP(jeu.vie, 100)}\n\n👉 Continue !` }, { quoted: msg }, 'texte');
-                }
-              }
-            }
-            return;
-          }
-        }
-
-        if (jeu.type === 'CHIFFRE' && !isNaN(cleanText)) {
-          const prop = parseInt(cleanText, 10);
-          const nomJ = profilsJoueurs[senderJid] || `@${senderJid.split('@')[0]}`;
-          jeu.essais = (jeu.essais || 0) + 1;
-
-          if (prop === jeu.secret) {
-            partiesEnCours[remoteJid] = { dernierType: 'CHIFFRE' };
-            await envoyerAvecDelai(sock, remoteJid, { text: `🏆 *VICTOIRE DE ${nomJ.toUpperCase()} !* 🏆\n\n🎯 Il a trouvé le chiffre mystère *${jeu.secret}* en *${jeu.essais} essai(s)* !\n\n🔄 Tapez *.restart* pour rejouer !` }, { quoted: msg }, 'texte');
-          } else {
-            const ind = prop < jeu.secret ? "📈 *C'est PLUS GRAND !*" : "📉 *C'est PLUS PETIT !*";
-            await envoyerAvecDelai(sock, remoteJid, { text: `${ind} (Proposé par *${nomJ}*)` }, { quoted: msg }, 'texte');
-          }
-          return;
-        }
-
-        if (jeu.type === 'FEU_ROUGE' && jeu.attenteReponse && cleanText.startsWith('@')) {
-          const saisi = cleanText.substring(1).trim().toLowerCase();
-          if (saisi === jeu.motAValider.toLowerCase()) {
-            let j = jeu.joueurs.find(j => j.jid === senderJid);
-            if (!j) {
-              j = { jid: senderJid, nom: profilsJoueurs[senderJid] || "Aventurier", elimine: false, aRepondu: false };
-              jeu.joueurs.push(j);
-            }
-            if (!j.aRepondu && !j.elimine) {
-              j.aRepondu = true;
-              await envoyerAvecDelai(sock, remoteJid, { text: `⚡ *${j.nom}* a traversé avec succès !` }, { quoted: msg }, 'texte');
-            }
-          }
-          return;
-        }
-      }
-
     } catch (err) {
       console.error("⚠️ Erreur :", err);
       try { if (sock) arreterComposing(sock, m.messages[0]?.key?.remoteJid); } catch (e) {}
     }
   });
-}
-
-// 💣 Passe au prochain joueur encore en vie (l'index vise toujours jeu.joueurs)
-function joueurSuivantBombe(jeu, depuis) {
-  const n = jeu.joueurs.length;
-  for (let i = 1; i <= n; i++) {
-    const idx = (depuis + i) % n;
-    if (!jeu.joueurs[idx].elimine) return idx;
-  }
-  return depuis;
-}
-
-function declencherJeuBombe(sock, remoteJid, msg) {
-  reinitialiserJeu(remoteJid);
-  const fils = ['rouge', 'bleu', 'jaune'];
-  partiesEnCours[remoteJid] = {
-    type: 'BOMBE',
-    statut: 'INSCRIPTION',
-    bonFil: fils[Math.floor(Math.random() * fils.length)],
-    joueurs: []
-  };
-
-  return envoyerAvecDelai(sock, remoteJid, { text: `💣 *DÉSACTIVATION DE LA BOMBE* 💣\n\nTu peux t'inscrire avec *.inscrire [Nom]* (ou lancer direct) puis taper *.lancer* !` }, { quoted: msg }, 'texte');
-}
-
-function demarrerChronoBombeGroupe(sock, remoteJid) {
-  const jeu = partiesEnCours[remoteJid];
-  if (!jeu || jeu.type !== 'BOMBE') return;
-
-  if (jeu.timerBombe) clearTimeout(jeu.timerBombe);
-  const joueurActuel = jeu.joueurs[jeu.indexTour];
-
-  jeu.timerBombe = setTimeout(async () => {
-    if (partiesEnCours[remoteJid] === jeu) {
-      joueurActuel.elimine = true;
-      const restants = jeu.joueurs.filter(j => !j.elimine);
-
-      if (restants.length === 0) {
-        partiesEnCours[remoteJid] = { dernierType: 'BOMBE' };
-        await envoyerAvecDelai(sock, remoteJid, { text: `💥 *BOOOOOOOM !* perdu 🤣🤣🤣🤣 *${joueurActuel.nom}*...\n💀 Tout a sauté !` }, {}, 'texte');
-      } else {
-        jeu.indexTour = joueurSuivantBombe(jeu, jeu.indexTour);
-        const prochain = jeu.joueurs[jeu.indexTour];
-        await envoyerAvecDelai(sock, remoteJid, { text: `💥 Temps écoulé ! *${joueurActuel.nom}* est éliminé !\n👉 Le relais passe à *${prochain.nom}* (15s) !` }, {}, 'texte');
-        demarrerChronoBombeGroupe(sock, remoteJid);
-      }
-    }
-  }, 15000);
-}
-
-function declencherJeuDe(sock, remoteJid, msg) {
-  reinitialiserJeu(remoteJid);
-  partiesEnCours[remoteJid] = { type: 'DE', statut: 'INSCRIPTION', joueurs: [] };
-  return envoyerAvecDelai(sock, remoteJid, { text: `🎲 *JEU DU DÉ (SOLO & MULTI)*\n\n👉 Tape *.inscrire [Nom]* puis *.lancer* pour jouer contre le bot ou tes amis !` }, { quoted: msg }, 'texte');
-}
-
-function declencherJeuLabyrinthe(sock, remoteJid, msg, texteCommande = ".lab solo") {
-  reinitialiserJeu(remoteJid);
-  
-  const texteArgs = typeof texteCommande === 'string' ? texteCommande : ".lab solo";
-  const parts = texteArgs.trim().split(/\s+/);
-  const niveauDemande = (parts[1] || 'solo').toLowerCase();
-
-  if (!['solo', 'duo', 'equipe'].includes(niveauDemande)) {
-    return envoyerAvecDelai(sock, remoteJid, { 
-      text: `🌀 *LABYRINTHE - CHOIX DU NIVEAU* 🌀\n\nPrécise ton niveau :\n• \`.lab solo\` ➔ Joueur seul\n• \`.lab duo\` ➔ Mode à deux\n• \`.lab equipe\` ➔ Mode toute une équipe\n\n*(Pour Duo et Équipe, l'inscription demande un nom de 2 à 5 lettres)*` 
-    }, { quoted: msg }, 'texte');
-  }
-
-  partiesEnCours[remoteJid] = {
-    type: 'LABYRINTHE',
-    niveau: niveauDemande,
-    statut: niveauDemande === 'solo' ? 'EN_COURS' : 'INSCRIPTION',
-    indexChemin: Math.floor(Math.random() * CHEMINS_LABYRINTHE.length),
-    étape: 0,
-    vie: 100,
-    joueurs: [],
-    ordreJoueurs: []
-  };
-
-  if (niveauDemande === 'solo') {
-    partiesEnCours[remoteJid].ordreJoueurs = [{ jid: msg.key.participant || msg.key.remoteJid, nom: "Aventurier" }];
-    return envoyerAvecDelai(sock, remoteJid, { 
-      text: `🌀 *LABYRINTHE - NIVEAU SOLO (10 Étapes)* 🌀\n\nC'est parti ! Affronte les pièges des catacombes.\n\n📍 Utilise : \`@gauche\`, \`@droite\`, \`@tout droit\`, \`@milieu\` ou \`@secret\`` 
-    }, { quoted: msg }, 'texte');
-  } else {
-    return envoyerAvecDelai(sock, remoteJid, { 
-      text: `🌀 *LABYRINTHE - NIVEAU ${niveauDemande.toUpperCase()} (10 Étapes)* 🌀\n\nInscriptions ouvertes !\n⚠ *Règle :* Ton nom d'inscription (\`.inscrire [Nom]\`) doit faire entre **2 et 5 lettres**.\n\n👉 Tape : \`.inscrire [Nom (2-5 lettres)]\` puis \`.lancer\`` 
-    }, { quoted: msg }, 'texte');
-  }
-}
-
-function declencherJeuFeuRouge(sock, remoteJid, msg, senderJid) {
-  reinitialiserJeu(remoteJid);
-  const nomSolo = profilsJoueurs[senderJid] || "Joueur Solo";
-
-  partiesEnCours[remoteJid] = { 
-    type: 'FEU_ROUGE', 
-    statut: 'INSCRIPTION', 
-    joueurs: [{ jid: senderJid, nom: nomSolo, elimine: false, aRepondu: false }] 
-  };
-  return envoyerAvecDelai(sock, remoteJid, { text: `🔴 *SQUID GAME SOLO/GROUPE*\n\n👉 Inscriptions : *.inscrire [Nom]* puis *.lancer* (ou tape direct *.lancer* pour jouer en solo) !` }, { quoted: msg }, 'texte');
-}
-
-function declencherJeuChiffre(sock, remoteJid, msg, senderJid) {
-  reinitialiserJeu(remoteJid);
-  const nomSolo = profilsJoueurs[senderJid] || "Joueur Solo";
-  
-  partiesEnCours[remoteJid] = { 
-    type: 'CHIFFRE', 
-    statut: 'EN_COURS', 
-    joueurs: [{ jid: senderJid, nom: nomSolo, elimine: false }], 
-    secret: Math.floor(Math.random() * 100) + 1, 
-    essais: 0 
-  };
-  return envoyerAvecDelai(sock, remoteJid, { text: `🔢 *CHIFFRE MYSTÈRE (1-100)*\n\n🎯 Mode Solo actif ! Écris directement un nombre entre 1 et 100 dans le tchat.\n*(Si tu veux jouer en groupe, utilise .inscrire [Nom] puis .lancer)*` }, { quoted: msg }, 'texte');
-}
-
-async function lancerMancheFeuRouge(sock, remoteJid) {
-  const jeu = partiesEnCours[remoteJid];
-  if (!jeu || jeu.type !== 'FEU_ROUGE') return;
-
-  const mot = MOTS_SQUID[Math.floor(Math.random() * MOTS_SQUID.length)];
-  jeu.motAValider = mot;
-  jeu.attenteReponse = true;
-  jeu.joueurs.forEach(j => j.aRepondu = false);
-
-  let tempsSec = 8 + Math.floor(Math.random() * 3);
-
-  await envoyerAvecDelai(sock, remoteJid, { text: `🔴 *FEU ROUGE !*\n\n👉 Tape vite *@${mot}* dans le tchat !\n⏰ Temps disponible : *${tempsSec} secondes* !` }, {}, 'texte');
-
-  jeu.timerFeu = setTimeout(async () => {
-    jeu.attenteReponse = false;
-
-    jeu.joueurs.forEach(j => {
-      if (!j.aRepondu) j.elimine = true;
-    });
-
-    const survivants = jeu.joueurs.filter(j => !j.elimine);
-    await envoyerAvecDelai(sock, remoteJid, { text: `🟢 *FEU VERT !* Fin du chrono !` }, {}, 'texte');
-
-    if (survivants.length === 0) {
-      partiesEnCours[remoteJid] = { dernierType: 'FEU_ROUGE' };
-      await envoyerAvecDelai(sock, remoteJid, { text: `💥 *ÉLIMINATION TOTALE !* Tu as bougé trop tard !` }, {}, 'texte');
-    } else if (survivants.length === 1) {
-      partiesEnCours[remoteJid] = { dernierType: 'FEU_ROUGE' };
-      await envoyerAvecDelai(sock, remoteJid, { text: `🏆 *CHAMPION SQUID GAME !* *${survivants[0].nom.toUpperCase()}* gagne la partie ! 🎉` }, {}, 'texte');
-    } else {
-      await envoyerAvecDelai(sock, remoteJid, { text: `📊 *Survivants :* ${survivants.length} en lice.\n⚡ Prochaine manche imminente...` }, {}, 'texte');
-      setTimeout(() => lancerMancheFeuRouge(sock, remoteJid), 2000);
-    }
-  }, tempsSec * 1000);
 }
 
 startBot();

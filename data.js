@@ -57,9 +57,6 @@ module.exports = {
   MOTS_AMOUR_PRIVE: ["je t'aime", "je t'aime tellement"],
   REPONSE_AMOUR_MAMAN: "moi aussi je t'aime maman 🤖🥰\nJe vous aime tout les 2 💓🥹.",
 
-  // 🔴 SQUID GAME
-  MOTS_SQUID: ["NEWYORKKK", "BBBBBB", "YELHSA", "ANDLEY", "BOTTI", "AMONGUSS", "FRANCE", "EXTRAANDY", "SOLEIL", "FEU", "SQUID", "TITAN", "BOMBE", "SURVIE"],
-
   // 🧠 CERVEAU / MOX
   DONNEES_CERVEAU: [
     "🤪 Niveau de folie",
@@ -105,26 +102,7 @@ module.exports = {
     "Magnifique ! Un cerveau presque neuf, il n'a jamais servi ! 📦"
   ],
 
-  // 🚪 LABYRINTHE
-  CHEMINS_LABYRINTHE: [
-    ["gauche", "tout droit", "droite", "gauche", "tout droit", "droite", "gauche", "tout droit", "droite", "tout droit"],
-    ["droite", "gauche", "tout droit", "droite", "gauche", "tout droit", "droite", "gauche", "tout droit", "gauche"],
-    ["tout droit", "tout droit", "gauche", "droite", "gauche", "tout droit", "droite", "droite", "gauche", "tout droit"]
-  ],
-  SUBS_LABYRINTHE: [
-    "Vous marchez à tâtons dans l'obscurité...",
-    "depuis lá tu es encore ici ahhh 😫",
-    "Une folle vous suis faites attention ohhhh",
-    "Un bruit étrange résonne dans le couloir...",
-    "La température baisse soudainement...",
-    "Tu vais où mm 🤣",
-    "Un courant d'air froid vous effleure la nuque...",
-    "Vous entendez des rires lointains..."
-  ],
-
   // 💾 MÉMOIRES ET ÉTATS TEMPORELS DU BOT
-  partiesEnCours: {},
-  timersInactivite: {},
   vueUniqueCache: {},
   sessionsMotDePasse: {},
   profilsJoueurs: {},
