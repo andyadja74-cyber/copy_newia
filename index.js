@@ -298,6 +298,7 @@ function arreterComposing(sock, jid) {
 
 // 🛡️ Fonction d'envoi sécurisée : lecture du message (coches bleues), "en train d'écrire…", puis envoi
 async function envoyerAvecDelai(sock, remoteJid, content, options = {}, typeAction = 'texte') {
+  options = sansCitationSupprimee(options);
   return enFile(remoteJid, async () => {
     try {
       const texte = typeof content === 'string' ? content : (content.text || content.caption || "");
@@ -319,6 +320,7 @@ async function envoyerAvecDelai(sock, remoteJid, content, options = {}, typeActi
       const sentMsg = await sock.sendMessage(remoteJid, content, options);
       if (sentMsg && sentMsg.key && sentMsg.key.id) {
         processedMessages.add(sentMsg.key.id);
+        memoriserMonEnvoi(remoteJid, sentMsg.key);
       }
       return sentMsg;
     } catch (err) {
@@ -801,16 +803,6 @@ async function fabriquerVocalFemme(texte) {
 }
 
 async function commandeVocF(sock, msg, remoteJid, cleanText) {
-  const estMoi = !!(msg.key && msg.key.fromMe);
-  let commandeEffacee = false;
-  // Supprime la commande tapée par toi : personne ne voit comment le vocal a été lancé
-  const effacerCommande = async () => {
-    if (!estMoi || commandeEffacee) return;
-    commandeEffacee = true;
-    try { await sock.sendMessage(remoteJid, { delete: msg.key }); }
-    catch (e) { console.error(`[VOC-F] ⚠️ Suppression de la commande impossible : ${e && e.message ? e.message : e}`); }
-  };
-
   let texte = cleanText.replace(/^\.voc-f\s*/i, '').trim();
 
   // sans texte : on lit le message auquel on répond
@@ -820,11 +812,10 @@ async function commandeVocF(sock, msg, remoteJid, cleanText) {
     if (cite) texte = (cite.conversation || (cite.extendedTextMessage && cite.extendedTextMessage.text) || (cite.imageMessage && cite.imageMessage.caption) || '').trim();
   }
 
-  // Rien à dire ou texte trop long : on efface la commande, sans aucune réponse du bot
-  if (!texte) { await effacerCommande(); return; }
+  // Rien à dire ou texte trop long : aucune réponse du bot (la commande est déjà effacée)
+  if (!texte) return;
   if (texte.length > VOCF_MAX_CARACTERES) {
     console.log(`[VOC-F] ⚠️ Texte trop long (${texte.length} caractères, maximum ${VOCF_MAX_CARACTERES})`);
-    await effacerCommande();
     return;
   }
 
@@ -832,8 +823,7 @@ async function commandeVocF(sock, msg, remoteJid, cleanText) {
     await preparerBinaires();
     if (!bin.ffmpeg) throw new Error('FFMPEG_ABSENT');
     const { buffer, secondes } = await fabriquerVocalFemme(texte);
-    await effacerCommande();
-    // envoyé sans citation (le message cité par la commande n'existe plus), comme un vocal de ta part
+    // envoyé sans citation : le vocal part comme si c'était toi
     await envoyerAvecDelai(sock, remoteJid, {
       audio: buffer,
       mimetype: 'audio/ogg; codecs=opus',
@@ -843,8 +833,276 @@ async function commandeVocF(sock, msg, remoteJid, cleanText) {
   } catch (e) {
     console.error(`[VOC-F] ❌ ${e && e.message ? e.message : e}`);
     arreterComposing(sock, remoteJid);
-    await effacerCommande();
   }
+}
+
+// 🧹 ═══════════════════════════════════════════════════════════
+// AUTO-SUPPRESSION : la commande tapée par le propriétaire est effacée dès qu'elle est lancée
+// ═══════════════════════════════════════════════════════════
+const messagesSupprimes = new Set();
+function effacerMessage(sock, jid, key) {
+  if (!key || !key.id) return Promise.resolve();
+  messagesSupprimes.add(key.id);
+  if (messagesSupprimes.size > 500) messagesSupprimes.clear();
+  return sock.sendMessage(jid, { delete: key }).catch(e => console.error(`[DEL] ⚠️ Suppression impossible : ${e && e.message ? e.message : e}`));
+}
+// Pas de citation vers un message déjà effacé (sinon WhatsApp l'affiche quand même)
+function sansCitationSupprimee(options) {
+  if (options && options.quoted && options.quoted.key && messagesSupprimes.has(options.quoted.key.id)) {
+    const { quoted, ...reste } = options;
+    return reste;
+  }
+  return options;
+}
+
+// 📒 Mes messages envoyés, par discussion (pour la commande .del)
+const mesEnvois = new Map();
+function memoriserMonEnvoi(jid, key) {
+  if (!jid || !key || !key.id) return;
+  const liste = mesEnvois.get(jid) || [];
+  if (liste.some(k => k.id === key.id)) return;
+  liste.push({ remoteJid: jid, fromMe: true, id: key.id });
+  if (liste.length > 300) liste.shift();
+  mesEnvois.set(jid, liste);
+}
+
+// 🗑️ .del → supprime pour tout le monde tous les messages envoyés par le propriétaire dans ce chat
+async function commandeDel(sock, remoteJid) {
+  const liste = (mesEnvois.get(remoteJid) || []).filter(k => !messagesSupprimes.has(k.id));
+  mesEnvois.set(remoteJid, []);
+  let reussis = 0;
+  for (const key of liste) {
+    try { await sock.sendMessage(remoteJid, { delete: key }); reussis++; } catch (e) {}
+    await sleep(400);
+  }
+  console.log(`[DEL] 🗑️ ${reussis}/${liste.length} message(s) supprimé(s) dans ${remoteJid}`);
+}
+
+// 💘 .cute [nombre] → compliments extra (3 à 20, 10 par défaut)
+const COMPLIMENTS_EXTRA = [
+  "Tu as une énergie qui rend les gens meilleurs autour de toi ✨",
+  "Ton sourire est une vraie bouffée d'air frais 😊",
+  "Tu es de ceux qu'on a envie de garder près de soi 💫",
+  "Ton esprit est aussi vif que ta présence est agréable 🧠",
+  "Tu rends les moments ordinaires exceptionnels 🌟",
+  "Tu as un cœur en or, ça se voit de loin 💛",
+  "Ta bonne humeur est contagieuse, continue comme ça 😄",
+  "Tu es le genre de personne qu'on remercie d'exister 🙏",
+  "Tu as un style unique, personne ne te copie 👑",
+  "Tu écoutes vraiment, et ça, c'est rare 👂",
+  "Tu as la force tranquille de ceux qui vont loin 🚀",
+  "Tu rends chaque conversation plus intéressante 💬",
+  "Tu as une élégance naturelle, sans effort 🥂",
+  "Ta gentillesse ne passe jamais inaperçue 🌸",
+  "Tu as le don de faire rire même les jours sombres 😂",
+  "Tu inspires confiance, et c'est une grande qualité 🛡️",
+  "Tu es un vrai trésor, à chérir absolument 💎",
+  "Ton courage force le respect, bravo à toi 🔥",
+  "Tu as une douceur qui fait du bien à tout le monde 🕊️",
+  "Tu es talentueux(se) et ça se remarque à chaque fois 🎯",
+  "Ton regard pétille quand tu parles de ce que tu aimes ✨",
+  "Tu es une lumière dans les groupes, merci d'être là 💡",
+  "Tu mérites tout le bonheur que tu donnes aux autres 💖",
+  "Tu es exceptionnel(le), et tu le sais peut-être pas assez 🏆"
+];
+async function commandeCute(sock, msg, remoteJid, cleanText) {
+  const mNombre = cleanText.match(/\(?\s*(\d+)\s*\)?\s*$/);
+  const nb = Math.max(1, Math.min(20, mNombre ? parseInt(mNombre[1], 10) : 10));
+  const compliments = melanger(COMPLIMENTS_EXTRA).slice(0, nb);
+  return enFile(remoteJid, async () => {
+    try {
+      await passerEnLigne(sock);
+      try { await sock.readMessages([msg.key]); } catch (e) {}
+      for (let i = 0; i < compliments.length; i++) {
+        await sock.sendPresenceUpdate('composing', remoteJid);
+        await sleep(1500);
+        await sock.sendMessage(remoteJid, { text: compliments[i] });
+        try { await sock.sendPresenceUpdate('paused', remoteJid); } catch (e) {}
+        if (i < compliments.length - 1) await sleep(1500);
+      }
+    } catch (err) {
+      console.error('⚠️ Erreur cute :', err);
+    } finally {
+      arreterComposing(sock, remoteJid);
+    }
+  });
+}
+
+// 💍 .askwedding @personne → demande en mariage (réponse oui / non pendant 5 minutes)
+const DEMANDES_MARIAGE = new Map();   // "chat|cible" -> { demandeur, expire }
+async function commandeAskWedding(sock, msg, remoteJid, senderJid) {
+  const repondre = (texte, mentions) => envoyerAvecDelai(sock, remoteJid, { text: texte, mentions: mentions || [] }, { quoted: msg }, 'texte');
+  const cible = trouverCible(msg, remoteJid, false);
+  if (!cible) return repondre("💍 Mentionne la personne : *.askwedding @personne*");
+  if (cible === senderJid) return repondre("😅 Tu ne peux pas te demander en mariage toi-même !");
+  DEMANDES_MARIAGE.set(`${remoteJid}|${cible}`, { demandeur: senderJid, expire: Date.now() + 5 * 60 * 1000 });
+  return repondre(
+    `💍 *DEMANDE EN MARIAGE* ❤️\n\n@${cible.split('@')[0]}, @${senderJid.split('@')[0]} te demande ta main… 🌹\n\n👉 Réponds *oui* ou *non* (5 minutes) 💕`,
+    [cible, senderJid]
+  );
+}
+// Renvoie true si le message était la réponse à une demande en mariage
+async function gererReponseMariage(sock, remoteJid, senderJid, lowerText) {
+  const cle = `${remoteJid}|${senderJid}`;
+  const demande = DEMANDES_MARIAGE.get(cle);
+  if (!demande) return false;
+  if (demande.expire < Date.now()) { DEMANDES_MARIAGE.delete(cle); return false; }
+  const reponse = lowerText.trim();
+  if (reponse !== 'oui' && reponse !== 'non') return false;
+  DEMANDES_MARIAGE.delete(cle);
+  const demandeur = `@${demande.demandeur.split('@')[0]}`;
+  const cible = `@${senderJid.split('@')[0]}`;
+  const texte = reponse === 'oui'
+    ? `💒 *C'EST OUI !* 💖\n${cible} et ${demandeur} sont désormais fiancés ! 🥂✨`
+    : `💔 *C'EST NON…*\n${cible} a refusé la demande de ${demandeur}. Courage à toi 🫂`;
+  await envoyerAvecDelai(sock, remoteJid, { text: texte, mentions: [senderJid, demande.demandeur] }, {}, 'texte');
+  return true;
+}
+
+// ➕ .add 225XXXXXXXXXX → ajoute un numéro dans le groupe (propriétaire, bot admin requis)
+async function commandeAdd(sock, msg, remoteJid, isGroup, cleanText) {
+  const repondre = (texte) => envoyerAvecDelai(sock, remoteJid, { text: texte }, { quoted: msg }, 'texte');
+  if (!isGroup) return repondre("⚠️ La commande *.add* ne marche que dans un groupe.");
+  const numero = cleanText.replace(/^\.add\s*/i, '').replace(/\D/g, '');
+  if (!/^\d{8,15}$/.test(numero)) return repondre("⚠️ Numéro invalide. Exemple : *.add 2250700000000* (indicatif pays inclus)");
+  try {
+    const res = await sock.groupParticipantsUpdate(remoteJid, [`${numero}@s.whatsapp.net`], 'add');
+    const statut = String(res && res[0] ? res[0].status : '');
+    if (statut === '200') return repondre(`✅ *+${numero}* a été ajouté au groupe !`);
+    if (statut === '409') return repondre(`ℹ️ *+${numero}* est déjà dans le groupe.`);
+    if (statut === '403') return repondre(`🔒 *+${numero}* refuse d'être ajouté (paramètres de confidentialité).`);
+    return repondre(`⚠️ Ajout impossible (statut ${statut || 'inconnu'}). Vérifie que je suis admin du groupe.`);
+  } catch (e) {
+    console.error(`[ADD] ❌ ${e && e.message ? e.message : e}`);
+    return repondre("⚠️ Ajout impossible. Vérifie que je suis admin du groupe.");
+  }
+}
+
+// 🖼️ .routine → l'image de la routine (media/routine.jpg)
+const ROUTINE_IMAGE = (() => {
+  try {
+    const chemin = path.join(__dirname, 'media', 'routine.jpg');
+    return fs.existsSync(chemin) ? fs.readFileSync(chemin) : null;
+  } catch (e) { return null; }
+})();
+async function commandeRoutine(sock, msg, remoteJid) {
+  const texte = "Voilà la routine de mon créateur 🤣😂😂";
+  if (ROUTINE_IMAGE) return envoyerAvecDelai(sock, remoteJid, { image: ROUTINE_IMAGE, caption: texte }, { quoted: msg }, 'media');
+  return envoyerAvecDelai(sock, remoteJid, { text: texte }, { quoted: msg }, 'texte');
+}
+
+// 📊 .infogroupe → détails complets du groupe
+function dureeEphemere(s) {
+  if (!s) return 'désactivés';
+  const connues = { 86400: '24 h', 604800: '7 jours', 7776000: '90 jours' };
+  return connues[s] || `${s} s`;
+}
+async function commandeInfoGroupe(sock, msg, remoteJid, isGroup) {
+  const repondre = (texte) => envoyerAvecDelai(sock, remoteJid, { text: texte }, { quoted: msg }, 'texte');
+  if (!isGroup) return repondre("⚠️ La commande *.infogroupe* ne marche que dans un groupe.");
+  let meta;
+  try { meta = await sock.groupMetadata(remoteJid); }
+  catch (e) { return repondre("⚠️ Impossible de lire les infos du groupe pour le moment."); }
+
+  const tz = process.env.BOT_TZ || 'Africa/Abidjan';
+  const admins = meta.participants.filter(p => p.admin);
+  const creeLe = meta.creation
+    ? new Date(meta.creation * 1000).toLocaleString('fr-FR', { dateStyle: 'long', timeStyle: 'short', timeZone: tz })
+    : 'inconnue';
+  const createur = meta.owner;
+  const description = meta.desc ? (meta.desc.length > 300 ? meta.desc.slice(0, 300) + '…' : meta.desc) : 'aucune';
+  const listeAdmins = admins.slice(0, 15).map(a => `@${a.id.split('@')[0]}`).join(' ') + (admins.length > 15 ? ` …(+${admins.length - 15})` : '');
+  const mentions = [...new Set([createur, ...admins.map(a => a.id)].filter(Boolean))];
+
+  const texte = enTete('📊 *INFOS DU GROUPE*', [
+    `🏷️ Nom : *${meta.subject || 'sans nom'}*`,
+    `🆔 ID : ${remoteJid.split('@')[0]}`,
+    `📅 Créé le : ${creeLe}`,
+    `👑 Créateur : ${createur ? `@${createur.split('@')[0]}` : 'inconnu'}`,
+    `👥 Membres : *${meta.participants.length}*`,
+    `🛡️ Admins (${admins.length}) : ${listeAdmins || 'aucun'}`,
+    `📢 Seuls les admins écrivent : ${meta.announce ? 'oui' : 'non'}`,
+    `✏️ Seuls les admins modifient : ${meta.restrict ? 'oui' : 'non'}`,
+    `⏳ Messages éphémères : ${dureeEphemere(meta.ephemeralDuration)}`
+  ]) + `\n\n📝 *Description*\n${description}`;
+
+  let photo = null;
+  try { photo = await sock.profilePictureUrl(remoteJid, 'image'); } catch (e) {}
+  if (photo) return envoyerAvecDelai(sock, remoteJid, { image: { url: photo }, caption: texte, mentions }, { quoted: msg }, 'media');
+  return envoyerAvecDelai(sock, remoteJid, { text: texte, mentions }, { quoted: msg }, 'texte');
+}
+
+// 💡 Astuces affichées dans l'accueil du menu
+const ASTUCES_MENU = [
+  "Tape *.menu all* pour voir toutes les commandes d'un coup",
+  "Tes commandes disparaissent dès qu'elles sont lancées : c'est voulu 😌",
+  "Règle le nombre de phrases : *drague @personne 7* (jusqu'à 10)",
+  "Essaie *.cute 15* pour recevoir 15 compliments",
+  "*.infogroupe* te donne tous les détails du groupe 📊",
+  "*.routine* → tu verras la routine de mon créateur 🤣"
+];
+
+// 🎈 ═══════════════════════════════════════════════════════════
+// SÉQUENCE « EST-CE QUE TU VAS BIEN ? » (messages privés) : vocal, puis image Gumball, puis réponse au numéro
+// ═══════════════════════════════════════════════════════════
+const GUMBALL_IMAGE = (() => {
+  try {
+    const chemin = path.join(__dirname, 'media', 'gumball.jpg');
+    return fs.existsSync(chemin) ? fs.readFileSync(chemin) : null;
+  } catch (e) { return null; }
+})();
+const DELAI_SEQUENCE_VA_MS = 10 * 60 * 1000;   // une séquence max toutes les 10 min par personne
+const sequenceVaEnCours = new Set();
+const derniereSequenceVa = new Map();   // jid -> date de la dernière séquence
+const gumballEnAttente = new Map();     // jid -> date limite pour répondre avec un numéro
+
+async function lancerSequenceVa(sock, remoteJid) {
+  sequenceVaEnCours.add(remoteJid);
+  derniereSequenceVa.set(remoteJid, Date.now());
+  try {
+    await preparerBinaires();
+    if (!bin.ffmpeg) throw new Error('FFMPEG_ABSENT');
+    const { buffer, secondes } = await fabriquerVocalFemme('Est-ce que tu vas bien ?');
+    await envoyerAvecDelai(sock, remoteJid, {
+      audio: buffer,
+      mimetype: 'audio/ogg; codecs=opus',
+      ptt: true,
+      ...(secondes ? { seconds: secondes } : {})
+    }, {}, 'media');
+  } catch (e) {
+    console.error(`[VA] ❌ vocal : ${e && e.message ? e.message : e}`);
+  }
+  try {
+    const texte = "Sélectionne ton Gumball d'aujourd'hui 👇\nRéponds avec son numéro (1 à 16) 😜";
+    const contenu = GUMBALL_IMAGE ? { image: GUMBALL_IMAGE, caption: texte } : { text: texte };
+    await envoyerAvecDelai(sock, remoteJid, contenu, {}, 'media');
+    gumballEnAttente.set(remoteJid, Date.now() + 30 * 60 * 1000);
+  } catch (e) {
+    console.error(`[VA] ❌ image : ${e && e.message ? e.message : e}`);
+  } finally {
+    sequenceVaEnCours.delete(remoteJid);
+  }
+}
+
+function declencherSequenceVa(sock, remoteJid) {
+  if (sequenceVaEnCours.has(remoteJid)) return;
+  if ((gumballEnAttente.get(remoteJid) || 0) > Date.now()) return;
+  if (Date.now() - (derniereSequenceVa.get(remoteJid) || 0) < DELAI_SEQUENCE_VA_MS) return;
+  lancerSequenceVa(sock, remoteJid).catch(e => console.error('[VA] ⚠️', e && e.message ? e.message : e));
+}
+
+// Renvoie true si le message était un numéro de Gumball (1 à 16) attendu
+async function gererNumeroGumball(sock, remoteJid, cleanText) {
+  const expire = gumballEnAttente.get(remoteJid);
+  if (!expire) return false;
+  if (expire < Date.now()) { gumballEnAttente.delete(remoteJid); return false; }
+  const saisie = cleanText.trim();
+  if (!/^\d{1,2}$/.test(saisie)) return false;
+  const numero = parseInt(saisie, 10);
+  if (numero < 1 || numero > 16) return false;
+  gumballEnAttente.delete(remoteJid);
+  await envoyerAvecDelai(sock, remoteJid, { text: "OK, force à toi 💪" }, {}, 'texte');
+  return true;
 }
 
 // 📚 REGISTRE DES COMMANDES
@@ -858,15 +1116,16 @@ const CATEGORIES_MENU = [
     ]
   },
   {
-    id: 'moderation', emoji: '🛡️', titre: 'Modération', note: 'Réservé aux admins & au bot',
+    id: 'moderation', emoji: '🛡️', titre: 'Modération', note: 'Réservé au propriétaire du bot',
     cmds: [
-      { noms: ['.kick'], args: '[@mention]', desc: 'Expulser un membre', admin: true },
-      { noms: ['.promote'], args: '[@mention]', desc: 'Promouvoir admin', admin: true },
-      { noms: ['.demote'], args: '[@mention]', desc: 'Rétrograder un admin', admin: true },
-      { noms: ['.warn'], args: '[@mention] [raison]', desc: 'Avertir un membre', admin: true },
-      { noms: ['.mute'], args: '[@mention]', desc: "Bloquer l'accès au bot à un membre", admin: true },
-      { noms: ['.unmute'], args: '[@mention]', desc: "Débloquer l'accès au bot", admin: true },
-      { noms: ['.private on', '.private off'], exact: true, aff: '.private', args: 'on | off', desc: "Verrouiller / déverrouiller le bot", owner: true }
+      { noms: ['.kick'], args: '[@mention]', desc: 'Expulser un membre', owner: true },
+      { noms: ['.promote'], args: '[@mention]', desc: 'Promouvoir admin', owner: true },
+      { noms: ['.demote'], args: '[@mention]', desc: 'Rétrograder un admin', owner: true },
+      { noms: ['.warn'], args: '[@mention] [raison]', desc: 'Avertir un membre', owner: true },
+      { noms: ['.mute'], args: '[@mention]', desc: "Bloquer l'accès au bot à un membre", owner: true },
+      { noms: ['.unmute'], args: '[@mention]', desc: "Débloquer l'accès au bot", owner: true },
+      { noms: ['.private on', '.private off'], exact: true, aff: '.private', args: 'on | off', desc: "Verrouiller / déverrouiller le bot", owner: true },
+      { noms: ['.add'], args: '[225XXXXXXXXXX]', desc: 'Ajouter un numéro dans le groupe', owner: true }
     ]
   },
   {
@@ -892,7 +1151,12 @@ const CATEGORIES_MENU = [
       { groupe: '🎭 Fun & Social', noms: ['.hack'], args: '[@mention]', desc: "Simulation de hack (groupe & privé)" },
       { groupe: '🎭 Fun & Social', noms: ['.balance'], args: '[@mention]', desc: 'Jauge Ange ou Démon' },
       { groupe: '🎭 Fun & Social', noms: ['.dec', '.mensonge'], args: '[texte]', desc: 'Détecteur de mensonges' },
-      { groupe: '🎭 Fun & Social', noms: ['drague', '.drague'], aff: 'drague', args: '[@mention] (nombre)', desc: 'Phrases de drague (1 toutes les 8 s)' }
+      { groupe: '🎭 Fun & Social', noms: ['drague', '.drague'], aff: 'drague', args: '[@mention] (nombre)', desc: 'Phrases de drague (3 par défaut, jusqu\'à 10)' },
+      { groupe: '🎭 Fun & Social', noms: ['.cute'], args: '[nombre]', desc: 'Compliments extra (10 par défaut, jusqu\'à 20)' },
+      { groupe: '🎭 Fun & Social', noms: ['.askwedding'], args: '[@mention]', desc: 'Demande en mariage ❤️' },
+      { groupe: '🎭 Fun & Social', noms: ['.routine'], exact: true, desc: 'La routine de mon créateur 🤣' },
+      { groupe: '🧹 Gestion', noms: ['.del'], exact: true, desc: 'Supprimer pour tout le monde tous tes messages ici' },
+      { groupe: '🧹 Gestion', noms: ['.infogroupe'], exact: true, desc: 'Détails complets du groupe' }
     ]
   }
 ];
@@ -998,8 +1262,10 @@ function menuHub(nom) {
     `⏱️ En ligne depuis : ${dureeLisible(process.uptime())}`,
     `📚 ${nbCommandes()} commandes • ${CATEGORIES_MENU.length} catégories`
   ]);
-  const liste = CATEGORIES_MENU.map((cat, i) => `${NUM_EMOJIS[i] || `${i + 1}.`} ${cat.emoji} *${cat.titre}* · ${cat.cmds.length}`).join('\n');
-  return `${ent}\n\n📂 *CATÉGORIES*\n${liste}`;
+  const max = Math.max(...CATEGORIES_MENU.map(c => c.cmds.length));
+  const barre = (n) => { const b = Math.round((n / max) * 8); return '▰'.repeat(b) + '▱'.repeat(8 - b); };
+  const liste = CATEGORIES_MENU.map((cat, i) => `${NUM_EMOJIS[i] || `${i + 1}.`} ${cat.emoji} *${cat.titre}* · ${cat.cmds.length}\n     ${barre(cat.cmds.length)}`).join('\n');
+  return `${ent}\n\n📂 *CATÉGORIES*\n${liste}\n\n💡 _${alea(ASTUCES_MENU)}_`;
 }
 
 function menuCategorie(i) {
@@ -1059,26 +1325,29 @@ function construireMenu(texte, nom) {
 
 // 🖼️ Envoie le menu avec son image (la légende WhatsApp est limitée : si le menu est trop long, image puis texte)
 async function envoyerMenu(sock, remoteJid, msg, resultat) {
-  // 🎲 Tirage aléatoire parmi les images ET la vidéo (si media/menu.mp4 existe)
-  const medias = [
-    ...MENU_IMAGES.map(buffer => ({ type: 'image', buffer })),
-    ...(MENU_VIDEO ? [{ type: 'video', buffer: MENU_VIDEO }] : [])
-  ];
-  if (!medias.length) {
-    return envoyerAvecDelai(sock, remoteJid, { text: resultat.texte }, { quoted: msg }, 'menu');
+  const texte = resultat.texte;
+  // 🎬 Accueil et « menu all » : la vidéo ; sous-menus : l'image de leur catégorie
+  let media = null;
+  if (typeof resultat.cat === 'number') {
+    const img = choisirImageMenu(resultat.cat);
+    if (img) media = { type: 'image', buffer: img };
+  } else if (MENU_VIDEO) {
+    media = { type: 'video', buffer: MENU_VIDEO };
+  } else if (MENU_IMAGES.length) {
+    media = { type: 'image', buffer: alea(MENU_IMAGES) };
   }
+  if (!media) return envoyerAvecDelai(sock, remoteJid, { text: texte }, { quoted: msg }, 'menu');
 
-  const media = alea(medias);
-  const court = resultat.texte.length <= 1000;
-  const legende = court ? resultat.texte : '⚡ *TITAN BOT* ⚡';
-
+  // La légende WhatsApp accepte ~1000 caractères : au-delà, le texte complet part juste après
+  const court = texte.length <= 1000;
+  const legende = court ? texte : '⚡ *TITAN BOT* ⚡';
   const contenu = media.type === 'video'
-    ? { video: media.buffer, gifPlayback: true, caption: legende }
+    ? { video: media.buffer, caption: legende }
     : { image: media.buffer, caption: legende };
 
   await envoyerAvecDelai(sock, remoteJid, contenu, { quoted: msg }, 'media');
   if (!court) {
-    return envoyerAvecDelai(sock, remoteJid, { text: resultat.texte }, {}, 'media');
+    return envoyerAvecDelai(sock, remoteJid, { text: texte }, {}, 'media');
   }
 }
 
@@ -1371,8 +1640,8 @@ async function commandeDrague(sock, msg, remoteJid, senderJid, cleanText) {
   }
 
   // On retire d'abord les mentions (@2250...) pour ne lire que le nombre de phrases demandé
-  const mNombre = cleanText.replace(/@\d+/g, '').trim().match(/(\d+)\s*$/);
-  const nb = Math.max(1, Math.min(5, mNombre ? parseInt(mNombre[1], 10) : 3));
+  const mNombre = cleanText.replace(/@\d+/g, '').trim().match(/\(?\s*(\d+)\s*\)?\s*$/);
+  const nb = Math.max(1, Math.min(10, mNombre ? parseInt(mNombre[1], 10) : 3));
   const tag = `@${cibleJid.split('@')[0]}`;
   const phrases = melanger(LISTE_DRAGUES).slice(0, nb).map(p => p.replace(/@tag/g, tag));
 
@@ -1384,7 +1653,7 @@ async function commandeDrague(sock, msg, remoteJid, senderJid, cleanText) {
       for (let i = 0; i < phrases.length; i++) {
         await sock.sendPresenceUpdate('composing', remoteJid);
         await sleep(2000);
-        const options = i === 0 ? { quoted: msg } : {};
+        const options = i === 0 ? sansCitationSupprimee({ quoted: msg }) : {};
         const envoye = await sock.sendMessage(remoteJid, { text: phrases[i], mentions: [cibleJid] }, options);
         if (envoye?.key?.id) processedMessages.add(envoye.key.id);
         try { await sock.sendPresenceUpdate('paused', remoteJid); } catch (e) {}
@@ -1799,6 +2068,7 @@ async function startBot() {
     try {
       const msg = m.messages[0];
       if (!msg || !msg.message) return;
+      if (msg.key && msg.key.fromMe && !msg.message.protocolMessage) memoriserMonEnvoi(msg.key.remoteJid, msg.key);
 
       if (msg.key.fromMe && processedMessages.has(msg.key.id)) return;
 
@@ -1841,6 +2111,11 @@ async function startBot() {
 
       const cleanText = (msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || msg.message.videoMessage?.caption || "").trim();
       const lowerText = cleanText.toLowerCase();
+
+      // 🧹 Commande lancée par le propriétaire : le message tapé est effacé tout de suite
+      if (isFromBot && msg.key.fromMe && (/^\.[a-z0-9]/i.test(cleanText) || estCommandeReconnue(lowerText))) {
+        effacerMessage(sock, remoteJid, msg.key);
+      }
 
       let storedContent = msg.message;
       if (storedContent?.ephemeralMessage) storedContent = storedContent.ephemeralMessage.message;
@@ -1934,6 +2209,29 @@ async function startBot() {
         return;
       }
 
+      // 🎈 Messages privés (hors mode privé du bot) : réponse au numéro, ou lancement de la séquence
+      if (!isGroup && !isFromBot && !data.botPrivateMode) {
+        if (await gererNumeroGumball(sock, remoteJid, cleanText)) return;
+        if (!/^\./.test(cleanText) && !estCommandeReconnue(lowerText)) declencherSequenceVa(sock, remoteJid);
+      }
+
+      if (await gererReponseMariage(sock, remoteJid, senderJid, lowerText)) return;
+
+      if (/^\.cute(\s|$)/.test(lowerText)) { await commandeCute(sock, msg, remoteJid, cleanText); return; }
+      if (/^\.askwedding(\s|$)/.test(lowerText)) { await commandeAskWedding(sock, msg, remoteJid, senderJid); return; }
+      if (/^\.routine$/.test(lowerText)) { await commandeRoutine(sock, msg, remoteJid); return; }
+      if (/^\.infogroupe$/.test(lowerText)) { await commandeInfoGroupe(sock, msg, remoteJid, isGroup); return; }
+      if (/^\.add(\s|$)/.test(lowerText)) {
+        if (!isFromBot) return;
+        await commandeAdd(sock, msg, remoteJid, isGroup, cleanText);
+        return;
+      }
+      if (/^\.del$/.test(lowerText)) {
+        if (!isFromBot) return;
+        await commandeDel(sock, remoteJid);
+        return;
+      }
+
       if (lowerText.startsWith('.confession')) {
         const confessionText = cleanText.replace(/^\.confession\s*/i, '').trim();
         if (!confessionText) {
@@ -1960,8 +2258,8 @@ async function startBot() {
       }
 
       if (['.kick', '.promote', '.demote', '.warn', '.mute', '.unmute'].some(cmd => lowerText.startsWith(cmd))) {
-        if (!isFromBot && !isAdmin) {
-          await envoyerAvecDelai(sock, remoteJid, { text: "⚠ Réservé aux administrateurs !" }, { quoted: msg }, 'texte');
+        if (!isFromBot) {
+          await envoyerAvecDelai(sock, remoteJid, { text: "⚠ Réservé au propriétaire du bot !" }, { quoted: msg }, 'texte');
           return;
         }
 
