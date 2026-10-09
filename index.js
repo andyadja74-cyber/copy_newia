@@ -1613,7 +1613,7 @@ async function commandeHack(sock, msg, remoteJid, senderJid, isGroup, cleanText)
 💬 *Dernier message envoyé :* ${alea(DERNIERS_MESSAGES_HACK)}
 🕵️ *Niveau de danger :* ${entierAlea(1, 100)}/100
 ━━━━━━━━━━━━━━━
-😂 _Amusement à part c'est réel hyn🥲_`;
+😂 *`Amusement à part c'est réel hyn*`🥲;
       const final = await sock.sendMessage(remoteJid, { text: rapport, mentions }, { quoted: msg });
       if (final?.key?.id) processedMessages.add(final.key.id);
     } catch (err) {
@@ -2247,7 +2247,7 @@ async function startBot() {
         return;
       }
 
-      if (lowerText.startsWith('.mariage')) {
+      if (lowerText.startsWith('.wedding')) {
         await commandeMariage(sock, msg, remoteJid, senderJid);
         return;
       }
