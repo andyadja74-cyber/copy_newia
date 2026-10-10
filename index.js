@@ -98,14 +98,36 @@ function numeroDuJid(jid) {
 }
 
 // Ex : "Ami Paul (~Paulo) · +2250700000000"   ou   "~Paulo · +2250700000000" si pas dans tes contacts
-function libelleContact(jid, pseudoMsg) {
+function libelleContact(jid, pseudoMsg, telephone) {
   if (!jid) return '?';
   const c = contactsConnus.get(jid) || {};
   const pseudo = c.pseudo || pseudoMsg;
   let nom = null;
   if (c.nom) nom = pseudo && pseudo !== c.nom ? `${c.nom} (~${pseudo})` : c.nom;
   else if (pseudo) nom = `~${pseudo}`;
-  return nom ? `${nom} · ${numeroDuJid(jid)}` : numeroDuJid(jid);
+  const num = telephone ? numeroDuJid(telephone) : (jid.endsWith('@lid') ? `${numeroDuJid(jid)} (numéro non reçu)` : numeroDuJid(jid));
+  return nom ? `${nom} · ${num}` : num;
+}
+
+// 📞 Correspondance LID -> vrai numéro (WhatsApp envoie le numéro à côté de l'identifiant LID)
+const lidVersNumero = new Map();
+function memoriserNumero(jid, alt) {
+  if (jid && jid.endsWith('@lid') && alt && alt.endsWith('@s.whatsapp.net')) lidVersNumero.set(jid, alt);
+}
+async function numeroReel(sock, jid, alt) {
+  if (!jid || !jid.endsWith('@lid')) return jid;
+  memoriserNumero(jid, alt);
+  if (lidVersNumero.has(jid)) return lidVersNumero.get(jid);
+  try {
+    const repo = sock.signalRepository?.lidMapping;
+    const pn = repo ? (await repo.getPNForLID(jid)) || (await repo.getPNForLID(jid.split('@')[0])) : null;
+    if (pn) {
+      const complet = pn.includes('@') ? pn : `${pn}@s.whatsapp.net`;
+      lidVersNumero.set(jid, complet);
+      return complet;
+    }
+  } catch (e) { /* pas encore connu : on garde l'identifiant */ }
+  return null;
 }
 
 async function nomGroupe(sock, jid) {
@@ -136,21 +158,28 @@ async function journaliserMessage(sock, msg, { muet = false } = {}) {
     const extrait = corps.replace(/\s+/g, ' ').trim();
     const contenu = extrait ? (extrait.length > 300 ? extrait.slice(0, 300) + '…' : extrait) : '(pas de texte)';
 
+    // Qui a écrit (et le numéro réel de cette personne, même si WhatsApp l'a masqué derrière un LID)
+    const jidAuteur = estBot ? sock.user.id.split(':')[0] + '@s.whatsapp.net' : (estGroupe ? msg.key.participant : jid);
+    const altAuteur = estGroupe ? msg.key.participantAlt : msg.key.remoteJidAlt;
+    const telAuteur = estBot ? jidAuteur : await numeroReel(sock, jidAuteur, altAuteur);
+
     let source, auteur;
     if (estGroupe) {
       const nomG = await nomGroupe(sock, jid);
       source = `👥 GROUPE « ${nomG} » (${jid.split('@')[0]})`;
-      auteur = estBot ? '🤖 Bot (compte Titan)' : libelleContact(msg.key.participant, msg.pushName);
     } else {
-      source = `👤 CONTACT privé · ${libelleContact(jid, estBot ? null : msg.pushName)}`;
-      auteur = estBot ? '🤖 Bot (compte Titan)' : libelleContact(jid, msg.pushName);
+      const telChat = await numeroReel(sock, jid, msg.key.remoteJidAlt);
+      source = `👤 CONTACT privé · ${libelleContact(jid, estBot ? null : msg.pushName, telChat)}`;
     }
+    auteur = estBot ? `🤖 Bot (compte Titan) · ${numeroDuJid(telAuteur)}` : libelleContact(jidAuteur, msg.pushName, telAuteur);
+    const numero = estBot ? numeroDuJid(telAuteur) : (telAuteur && !telAuteur.endsWith('@lid') ? numeroDuJid(telAuteur) : '❓ non reçu (compte LID)');
 
     const tags = [muet && '🔇 expéditeur muet', viewOnce && '👁️ vue unique'].filter(Boolean);
     console.log([
       `┏━━ 📩 MESSAGE · ${date} ━━`,
       `┃ 📍 Source   : ${source}`,
       `┃ 👤 Auteur   : ${auteur}`,
+      `┃ 📞 Numéro   : ${numero}`,
       `┃ 🏷️ Type     : ${type}${tags.length ? `   [${tags.join(' · ')}]` : ''}`,
       `┃ 💬 Contenu  : ${contenu}`,
       `┃ 🆔 ID       : ${msg.key.id}`,
@@ -932,7 +961,7 @@ async function commandeCute(sock, msg, remoteJid, cleanText) {
 const DEMANDES_MARIAGE = new Map();   // "chat|cible" -> { demandeur, expire }
 async function commandeAskWedding(sock, msg, remoteJid, senderJid) {
   const repondre = (texte, mentions) => envoyerAvecDelai(sock, remoteJid, { text: texte, mentions: mentions || [] }, { quoted: msg }, 'texte');
-  const cible = trouverCible(msg, remoteJid, false);
+  const cible = trouverCible(msg, remoteJid, true, autreDe(msg, sock, remoteJid));
   if (!cible) return repondre("💍 Mentionne la personne : *.askwedding @personne*");
   if (cible === senderJid) return repondre("😅 Tu ne peux pas te demander en mariage toi-même !");
   DEMANDES_MARIAGE.set(`${remoteJid}|${cible}`, { demandeur: senderJid, expire: Date.now() + 5 * 60 * 1000 });
@@ -1042,69 +1071,6 @@ const ASTUCES_MENU = [
   "*.routine* → tu verras la routine de mon créateur 🤣"
 ];
 
-// 🎈 ═══════════════════════════════════════════════════════════
-// SÉQUENCE « EST-CE QUE TU VAS BIEN ? » (messages privés) : vocal, puis image Gumball, puis réponse au numéro
-// ═══════════════════════════════════════════════════════════
-const GUMBALL_IMAGE = (() => {
-  try {
-    const chemin = path.join(__dirname, 'media', 'gumball.jpg');
-    return fs.existsSync(chemin) ? fs.readFileSync(chemin) : null;
-  } catch (e) { return null; }
-})();
-const DELAI_SEQUENCE_VA_MS = 10 * 60 * 1000;   // une séquence max toutes les 10 min par personne
-const sequenceVaEnCours = new Set();
-const derniereSequenceVa = new Map();   // jid -> date de la dernière séquence
-const gumballEnAttente = new Map();     // jid -> date limite pour répondre avec un numéro
-
-async function lancerSequenceVa(sock, remoteJid) {
-  sequenceVaEnCours.add(remoteJid);
-  derniereSequenceVa.set(remoteJid, Date.now());
-  try {
-    await preparerBinaires();
-    if (!bin.ffmpeg) throw new Error('FFMPEG_ABSENT');
-    const { buffer, secondes } = await fabriquerVocalFemme('Est-ce que tu vas bien ?');
-    await envoyerAvecDelai(sock, remoteJid, {
-      audio: buffer,
-      mimetype: 'audio/ogg; codecs=opus',
-      ptt: true,
-      ...(secondes ? { seconds: secondes } : {})
-    }, {}, 'media');
-  } catch (e) {
-    console.error(`[VA] ❌ vocal : ${e && e.message ? e.message : e}`);
-  }
-  try {
-    const texte = "Sélectionne ton Gumball d'aujourd'hui 👇\nRéponds avec son numéro (1 à 16) 😜";
-    const contenu = GUMBALL_IMAGE ? { image: GUMBALL_IMAGE, caption: texte } : { text: texte };
-    await envoyerAvecDelai(sock, remoteJid, contenu, {}, 'media');
-    gumballEnAttente.set(remoteJid, Date.now() + 30 * 60 * 1000);
-  } catch (e) {
-    console.error(`[VA] ❌ image : ${e && e.message ? e.message : e}`);
-  } finally {
-    sequenceVaEnCours.delete(remoteJid);
-  }
-}
-
-function declencherSequenceVa(sock, remoteJid) {
-  if (sequenceVaEnCours.has(remoteJid)) return;
-  if ((gumballEnAttente.get(remoteJid) || 0) > Date.now()) return;
-  if (Date.now() - (derniereSequenceVa.get(remoteJid) || 0) < DELAI_SEQUENCE_VA_MS) return;
-  lancerSequenceVa(sock, remoteJid).catch(e => console.error('[VA] ⚠️', e && e.message ? e.message : e));
-}
-
-// Renvoie true si le message était un numéro de Gumball (1 à 16) attendu
-async function gererNumeroGumball(sock, remoteJid, cleanText) {
-  const expire = gumballEnAttente.get(remoteJid);
-  if (!expire) return false;
-  if (expire < Date.now()) { gumballEnAttente.delete(remoteJid); return false; }
-  const saisie = cleanText.trim();
-  if (!/^\d{1,2}$/.test(saisie)) return false;
-  const numero = parseInt(saisie, 10);
-  if (numero < 1 || numero > 16) return false;
-  gumballEnAttente.delete(remoteJid);
-  await envoyerAvecDelai(sock, remoteJid, { text: "OK, force à toi 💪" }, {}, 'texte');
-  return true;
-}
-
 // 📚 REGISTRE DES COMMANDES
 const CATEGORIES_MENU = [
   {
@@ -1143,7 +1109,7 @@ const CATEGORIES_MENU = [
       { groupe: '🌐 Utilitaires', noms: ['.dico', '.def', '.dictionnaire'], aff: '.dico', args: '[mot]', desc: 'Dictionnaire en ligne' },
       { groupe: '🌐 Utilitaires', noms: ['ret'], args: '[phrase] (nombre)', desc: 'Répéter une phrase', test: t => t.startsWith('ret ') },
       { groupe: '🎭 Fun & Social', noms: ['.8ball'], args: '[question]', desc: 'Boule de cristal' },
-      { groupe: '🎭 Fun & Social', noms: ['.love'], args: '[@mention] [@mention]', desc: "Test d'amour" },
+      { groupe: '🎭 Fun & Social', noms: ['.love'], args: '[@mention] [@mention]', desc: "Test d'amour (groupe & privé)" },
       { groupe: '🎭 Fun & Social', noms: ['.mariage'], args: '[@mention]', desc: 'Épouser quelqu\'un' },
       { groupe: '🎭 Fun & Social', noms: ['.divorce'], exact: true, desc: 'Divorcer' },
       { groupe: '🎭 Fun & Social', noms: ['.confession'], args: '[texte]', desc: 'Confession anonyme' },
@@ -1354,12 +1320,22 @@ async function envoyerMenu(sock, remoteJid, msg, resultat) {
 // ═══════════════════════════════════════════════════════════
 // 🎯 CIBLE D'UNE COMMANDE (mention, message cité, ou la personne du chat privé)
 // ═══════════════════════════════════════════════════════════
-function trouverCible(msg, remoteJid, repliPrive = false) {
+function trouverCible(msg, remoteJid, repliPrive = false, autreJid = null) {
   const ctx = msg.message?.extendedTextMessage?.contextInfo;
   if (ctx?.mentionedJid?.length) return ctx.mentionedJid[0];
   if (ctx?.quotedMessage && ctx.participant) return ctx.participant;
-  if (repliPrive && !remoteJid.endsWith('@g.us')) return remoteJid;
+  if (repliPrive && !remoteJid.endsWith('@g.us')) return autreJid || remoteJid;
   return null;
+}
+
+// 🙋 Qui a lancé la commande : en groupe = l'expéditeur ; en privé = moi (si je l'ai envoyée) ou la personne du chat
+function acteurDe(msg, sock, remoteJid, senderJid) {
+  if (remoteJid.endsWith('@g.us')) return senderJid;
+  return msg.key.fromMe ? sock.user.id.split(':')[0] + '@s.whatsapp.net' : remoteJid;
+}
+// 👥 En privé : l'autre personne du chat (celle qui n'a pas lancé la commande)
+function autreDe(msg, sock, remoteJid) {
+  return msg.key.fromMe ? remoteJid : sock.user.id.split(':')[0] + '@s.whatsapp.net';
 }
 
 function barre(pourcent, total = 10) {
@@ -1424,7 +1400,7 @@ const COMMENTAIRES_DIVORCE = [
 async function commandeMariage(sock, msg, remoteJid, senderJid) {
   const rep = (texte, mentions = []) => envoyerAvecDelai(sock, remoteJid, { text: texte, mentions }, { quoted: msg }, 'texte');
   const botNumber = sock.user.id.split(':')[0] + '@s.whatsapp.net';
-  const cible = trouverCible(msg, remoteJid, false);
+  const cible = trouverCible(msg, remoteJid, true, autreDe(msg, sock, remoteJid));
 
   if (!cible) return rep("⚠️ Mentionne (ou réponds au message de) la personne que tu veux épouser !\nExemple : *.mariage @personne*");
   if (cible === senderJid) return rep("⚠️ Tu ne peux pas t'épouser toi-même ! L'amour de soi c'est bien, mais là c'est trop 🤣");
@@ -1551,7 +1527,7 @@ async function commandeHack(sock, msg, remoteJid, senderJid, isGroup, cleanText)
   const rep = (texte, mentions = []) => envoyerAvecDelai(sock, remoteJid, { text: texte, mentions }, { quoted: msg }, 'texte');
   const botNumber = sock.user.id.split(':')[0] + '@s.whatsapp.net';
   const args = cleanText.replace(/^\.hack\s*/i, '').replace(/@\d+/g, '').trim();
-  const cibleJid = trouverCible(msg, remoteJid, true);
+  const cibleJid = trouverCible(msg, remoteJid, true, autreDe(msg, sock, remoteJid));
 
   if (!cibleJid && !args) {
     return rep("⚠️ Qui veux-tu hacker ?\n• Dans un groupe : *.hack @personne* (ou réponds à son message)\n• En privé : *.hack* (je hacke la personne avec qui je discute)\n• Ou un nom : *.hack Kevin*");
@@ -1613,7 +1589,7 @@ async function commandeHack(sock, msg, remoteJid, senderJid, isGroup, cleanText)
 💬 *Dernier message envoyé :* ${alea(DERNIERS_MESSAGES_HACK)}
 🕵️ *Niveau de danger :* ${entierAlea(1, 100)}/100
 ━━━━━━━━━━━━━━━
-😂 *`Amusement à part c'est réel hyn*`🥲;
+😂 *Amusement à part c'est réel hyn* 🥲`;
       const final = await sock.sendMessage(remoteJid, { text: rapport, mentions }, { quoted: msg });
       if (final?.key?.id) processedMessages.add(final.key.id);
     } catch (err) {
@@ -1631,7 +1607,7 @@ const draguesEnCours = new Set();
 
 async function commandeDrague(sock, msg, remoteJid, senderJid, cleanText) {
   const rep = (texte) => envoyerAvecDelai(sock, remoteJid, { text: texte }, { quoted: msg }, 'texte');
-  const cibleJid = trouverCible(msg, remoteJid, true);
+  const cibleJid = trouverCible(msg, remoteJid, true, autreDe(msg, sock, remoteJid));
   if (!cibleJid) {
     return rep("⚠️ Mentionne la personne à draguer !\nExemple : *drague @personne* (ou *drague @personne 3* pour 3 phrases)");
   }
@@ -1871,9 +1847,11 @@ async function commandeLove(sock, msg, remoteJid, senderJid) {
   const ctx = msg.message?.extendedTextMessage?.contextInfo;
   const mentions = ctx?.mentionedJid || [];
   let a; let b;
+  const acteur = acteurDe(msg, sock, remoteJid, senderJid);
   if (mentions.length >= 2) { a = mentions[0]; b = mentions[1]; }
-  else if (mentions.length === 1) { a = senderJid; b = mentions[0]; }
-  else if (ctx?.quotedMessage && ctx.participant) { a = senderJid; b = ctx.participant; }
+  else if (mentions.length === 1) { a = acteur; b = mentions[0]; }
+  else if (ctx?.quotedMessage && ctx.participant) { a = acteur; b = ctx.participant; }
+  else if (!remoteJid.endsWith('@g.us')) { a = acteur; b = autreDe(msg, sock, remoteJid); }
   if (!a || !b) {
     return envoyerAvecDelai(sock, remoteJid, { text: "⚠️ Mentionne une ou deux personnes !\nExemple : *.love @personne* ou *.love @A @B*" }, { quoted: msg }, 'texte');
   }
@@ -2196,7 +2174,9 @@ async function startBot() {
         data.botPrivateMode = true;
       }
 
-      if (data.botPrivateMode && !isFromBot) {
+      // 📖 Le dictionnaire reste accessible même en mode privé
+      const dictionnaireAutorise = /^\.(dico|def|dictionnaire)(\s|$)/.test(lowerText);
+      if (data.botPrivateMode && !isFromBot && !dictionnaireAutorise) {
         if (cleanText === '2010') {
           data.botPrivateMode = false;
           refusPriveDeja.clear();
@@ -2204,21 +2184,15 @@ async function startBot() {
         } else if (!refusPriveDeja.has(senderJid)) {
           // Une seule fois par personne : ensuite silence total, même si elle insiste
           refusPriveDeja.add(senderJid);
-          await envoyerAvecDelai(sock, remoteJid, { text: "Je ne te répondrai pas\nje suis occupée 🧖🏼‍♀️🛀🏼💇🏼‍♀️" }, { quoted: msg }, 'texte');
+          await envoyerAvecDelai(sock, remoteJid, { text: "🤖 en mode privé🔒\nattendez un instant il vous reviendra ☺️" }, { quoted: msg }, 'texte');
         }
         return;
-      }
-
-      // 🎈 Messages privés (hors mode privé du bot) : réponse au numéro, ou lancement de la séquence
-      if (!isGroup && !isFromBot && !data.botPrivateMode) {
-        if (await gererNumeroGumball(sock, remoteJid, cleanText)) return;
-        if (!/^\./.test(cleanText) && !estCommandeReconnue(lowerText)) declencherSequenceVa(sock, remoteJid);
       }
 
       if (await gererReponseMariage(sock, remoteJid, senderJid, lowerText)) return;
 
       if (/^\.cute(\s|$)/.test(lowerText)) { await commandeCute(sock, msg, remoteJid, cleanText); return; }
-      if (/^\.askwedding(\s|$)/.test(lowerText)) { await commandeAskWedding(sock, msg, remoteJid, senderJid); return; }
+      if (/^\.askwedding(\s|$)/.test(lowerText)) { await commandeAskWedding(sock, msg, remoteJid, acteurDe(msg, sock, remoteJid, senderJid)); return; }
       if (/^\.routine$/.test(lowerText)) { await commandeRoutine(sock, msg, remoteJid); return; }
       if (/^\.infogroupe$/.test(lowerText)) { await commandeInfoGroupe(sock, msg, remoteJid, isGroup); return; }
       if (/^\.add(\s|$)/.test(lowerText)) {
@@ -2248,7 +2222,7 @@ async function startBot() {
       }
 
       if (lowerText.startsWith('.wedding')) {
-        await commandeMariage(sock, msg, remoteJid, senderJid);
+        await commandeMariage(sock, msg, remoteJid, acteurDe(msg, sock, remoteJid, senderJid));
         return;
       }
 
@@ -2401,12 +2375,12 @@ async function startBot() {
       }
 
       if (/^\.hack(\s|$)/.test(lowerText)) {
-        await commandeHack(sock, msg, remoteJid, senderJid, isGroup, cleanText);
+        await commandeHack(sock, msg, remoteJid, acteurDe(msg, sock, remoteJid, senderJid), isGroup, cleanText);
         return;
       }
 
       if (/^\.?drague(\s|$)/.test(lowerText)) {
-        await commandeDrague(sock, msg, remoteJid, senderJid, cleanText);
+        await commandeDrague(sock, msg, remoteJid, acteurDe(msg, sock, remoteJid, senderJid), cleanText);
         return;
       }
 
@@ -2421,17 +2395,17 @@ async function startBot() {
       }
 
       if (/^\.(fiche|rang)(\s|$)/.test(lowerText)) {
-        await commandeFiche(sock, msg, remoteJid, senderJid);
+        await commandeFiche(sock, msg, remoteJid, acteurDe(msg, sock, remoteJid, senderJid));
         return;
       }
 
       if (/^\.balance(\s|$)/.test(lowerText)) {
-        await commandeBalance(sock, msg, remoteJid, senderJid);
+        await commandeBalance(sock, msg, remoteJid, acteurDe(msg, sock, remoteJid, senderJid));
         return;
       }
 
       if (/^\.?(cerveau|mox)(\s|$)/.test(lowerText)) {
-        await commandeCerveau(sock, msg, remoteJid, senderJid);
+        await commandeCerveau(sock, msg, remoteJid, acteurDe(msg, sock, remoteJid, senderJid));
         return;
       }
 
@@ -2477,7 +2451,7 @@ async function startBot() {
       }
 
       if (/^(\.pp|\.p|pipi)(\s|$)/.test(lowerText)) {
-        const cible = trouverCible(msg, remoteJid, false) || senderJid;
+        const cible = trouverCible(msg, remoteJid, false) || acteurDe(msg, sock, remoteJid, senderJid);
         try {
           const ppUrl = await sock.profilePictureUrl(cible, 'image');
           await envoyerAvecDelai(sock, remoteJid, { image: { url: ppUrl }, caption: `📸 Photo de profil de ${nomAffiche(cible)}`, mentions: [cible] }, { quoted: msg }, 'media');
