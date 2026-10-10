@@ -1358,7 +1358,8 @@ async function envoyerMenu(sock, remoteJid, msg, resultat) {
 function trouverCible(msg, remoteJid, repliPrive = false, autreJid = null) {
   const ctx = msg.message?.extendedTextMessage?.contextInfo;
   if (ctx?.mentionedJid?.length) return ctx.mentionedJid[0];
-  if (ctx?.quotedMessage && ctx.participant) return ctx.participant;
+  // En groupe seulement : en privé, le « participant » d'une réponse peut être le compte du bot
+  if (ctx?.quotedMessage && ctx.participant && remoteJid.endsWith('@g.us')) return ctx.participant;
   if (repliPrive && !remoteJid.endsWith('@g.us')) return autreJid || remoteJid;
   return null;
 }
@@ -1446,19 +1447,32 @@ const COMMENTAIRES_DIVORCE = [
 async function commandeMariage(sock, msg, remoteJid, senderJid) {
   const rep = (texte, mentions = []) => envoyerAvecDelai(sock, remoteJid, { text: texte, mentions }, { quoted: msg }, 'texte');
   const botNumber = sock.user.id.split(':')[0] + '@s.whatsapp.net';
-  const cible = trouverCible(msg, remoteJid, true, autreDe(msg, sock, remoteJid));
 
-  if (!cible) return rep("⚠️ Mentionne (ou réponds au message de) la personne que tu veux épouser !\nExemple : *.mariage @personne*");
-  if (cible === senderJid) return rep("⚠️ Tu ne peux pas t'épouser toi-même ! L'amour de soi c'est bien, mais là c'est trop 🤣");
-  if (cible === botNumber) return rep("🤖💔 Désolé, je suis déjà marié à mon code source. Dur dur la vie de bot…");
-
-  const mien = mariages.get(senderJid);
-  if (mien) {
-    return rep(`🚫 *BIGAMIE DÉTECTÉE !* 🚨\n\nTu es déjà marié(e) avec ${nomAffiche(mien.conjoint)} depuis ${dureeLisible((Date.now() - mien.ts) / 1000)} !\nFais d'abord *.divorce* si tu veux changer 😏`, [mien.conjoint]);
+  // Deux personnes mentionnées : on les marie entre elles (l'auteur n'est pas ajouté)
+  // Une seule mention (ou message cité) : l'auteur et la personne visée
+  const mentionnes = [...new Set(msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [])]
+    .filter(j => j !== botNumber);
+  let a;
+  let b;
+  if (mentionnes.length >= 2) {
+    a = mentionnes[0];
+    b = mentionnes[1];
+  } else {
+    a = senderJid;
+    b = trouverCible(msg, remoteJid, true, autreDe(msg, sock, remoteJid));
   }
-  const sien = mariages.get(cible);
+
+  if (!b) return rep("⚠️ Mentionne une ou deux personnes !\nExemple : *.mariage @A @B* (ou *.mariage @personne* pour te marier avec elle)");
+  if (b === a) return rep("⚠️ Tu ne peux pas marier quelqu'un avec lui-même ! L'amour de soi c'est bien, mais là c'est trop 🤣");
+  if (b === botNumber || a === botNumber) return rep("🤖💔 Désolé, je suis déjà marié à mon code source. Dur dur la vie de bot…");
+
+  const mien = mariages.get(a);
+  if (mien) {
+    return rep(`🚫 *BIGAMIE DÉTECTÉE !* 🚨\n\n${nomAffiche(a)} est déjà marié(e) avec ${nomAffiche(mien.conjoint)} depuis ${dureeLisible((Date.now() - mien.ts) / 1000)} !\nFaites d'abord *.divorce* si vous voulez changer 😏`, [a, mien.conjoint]);
+  }
+  const sien = mariages.get(b);
   if (sien) {
-    return rep(`🚫 ${nomAffiche(cible)} est déjà marié(e) avec ${nomAffiche(sien.conjoint)} !\nOn ne touche pas au mari/à la femme des autres 😤`, [cible, sien.conjoint]);
+    return rep(`🚫 ${nomAffiche(b)} est déjà marié(e) avec ${nomAffiche(sien.conjoint)} !\nOn ne touche pas au mari/à la femme des autres 😤`, [b, sien.conjoint]);
   }
 
   const score = entierAlea(50, 100);
@@ -1467,11 +1481,11 @@ async function commandeMariage(sock, msg, remoteJid, senderJid) {
   const lieu = alea(LIEUX_MARIAGE);
   const { date } = heureLocale();
 
-  mariages.set(senderJid, { conjoint: cible, ts: Date.now(), lieu });
-  mariages.set(cible, { conjoint: senderJid, ts: Date.now(), lieu });
+  mariages.set(a, { conjoint: b, ts: Date.now(), lieu });
+  mariages.set(b, { conjoint: a, ts: Date.now(), lieu });
 
-  const nomA = nomAffiche(senderJid);
-  const nomB = nomAffiche(cible);
+  const nomA = nomAffiche(a);
+  const nomB = nomAffiche(b);
   const texte =
 `💍━━━━━━━━━━━━━━━━💍
 📜 *CERTIFICAT DE MARIAGE* 📜
@@ -1499,7 +1513,7 @@ async function commandeMariage(sock, msg, remoteJid, senderJid) {
 
 🎉 _Vous pouvez embrasser… le bot en témoin !_ 🥂
 _Pour divorcer : *.divorce*_`;
-  return rep(texte, [senderJid, cible]);
+  return rep(texte, [a, b]);
 }
 
 async function commandeDivorce(sock, msg, remoteJid, senderJid) {
@@ -2268,28 +2282,10 @@ async function startBot() {
       if (storedContent?.viewOnceMessageV2) storedContent = storedContent.viewOnceMessageV2.message;
       if (storedContent?.viewOnceMessage) storedContent = storedContent.viewOnceMessage.message;
 
-      const textToCache = storedContent.conversation || storedContent.extendedTextMessage?.text || storedContent.imageMessage?.caption || "";
-      const imageMsg = storedContent.imageMessage || storedContent.viewOnceMessageV2?.message?.imageMessage || storedContent.viewOnceMessage?.message?.imageMessage;
+      // Anti-delete : uniquement les messages texte (pas les photos, vidéos ni vocaux, pour économiser la RAM)
+      const textToCache = storedContent.conversation || storedContent.extendedTextMessage?.text || "";
 
-      if (imageMsg) {
-        try {
-          const stream = await downloadContentFromMessage(imageMsg, 'image');
-          let buffer = Buffer.from([]);
-          for await (const chunk of stream) {
-            buffer = Buffer.concat([buffer, chunk]);
-          }
-
-          messageCache[messageId] = {
-            sender: senderJid,
-            fromMe: !!msg.key.fromMe,
-            mediaMessage: true,
-            mediaType: 'image',
-            buffer: buffer,
-            caption: imageMsg.caption || "",
-            fdate: formattedDate
-          };
-        } catch (e) {}
-      } else if (textToCache) {
+      if (textToCache) {
         messageCache[messageId] = {
           sender: senderJid,
           fromMe: !!msg.key.fromMe,
@@ -2374,7 +2370,7 @@ async function startBot() {
         return;
       }
 
-      if (lowerText.startsWith('.wedding')) {
+      if (lowerText.startsWith('.wedding') || lowerText.startsWith('.mariage')) {
         await commandeMariage(sock, msg, remoteJid, acteurDe(msg, sock, remoteJid, senderJid));
         return;
       }
