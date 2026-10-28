@@ -47,6 +47,9 @@ const messageCache = {};
 const utilisateursMutes = new Set();
 // 🔒 Mode privé : personnes déjà prévenues (le bot ne le dit qu'une fois) + compteur de commandes pour .fiche
 const refusPriveDeja = new Set();
+// Accès admin temporaire accordé aux personnes qui ont demandé l'accès dans un groupe puis envoyé 2010 en privé.
+const demandesAccesPrive = new Set();
+const utilisateursAutorisesMotDePasse = new Set();
 const statsCommandes = {};
 
 // ═══════════════════════════════════════════════════════════
@@ -232,7 +235,7 @@ function choisirImageMenu(cat) {
 process.on('uncaughtException', (err) => console.error('⚠️️ Erreur évitée :', err));
 process.on('unhandledRejection', (reason) => console.error('⚠️ Promesse rejetée :', reason));
 
-app.get("/", (req, res) => res.send("⚡ TITAN BOT GROUPE EN LIGNE"));
+app.get("/", (req, res) => res.send("⚡ *ATOMIC*"));
 app.get("/health", (req, res) => res.status(200).send("OK"));
 
 app.listen(PORT, () => console.log(`🌐 Serveur actif sur le port ${PORT}`));
@@ -532,7 +535,7 @@ async function traiterVueUnique(sock, msg) {
   if (!VU_AUTO) return;
 
   const nom = profilsJoueurs[expediteur] || `@${expediteur.split('@')[0]}`;
-  const texte = `🚨👀 *VUE UNIQUE INTERCEPTÉE PAR TITAN !* ${lab.emoji}\n👤 *Envoyée par :* ${nom}\n📅 *Date :* ${fdate}${cache.caption ? `\n📝 *Légende :* ${cache.caption}` : ''}\n✨ _Aucune cachette possible ici 😈_`;
+  const texte = `🚨👀 *VUE UNIQUE INTERCEPTÉE PAR ATOMIC !* ${lab.emoji}\n👤 *Envoyée par :* ${nom}\n📅 *Date :* ${fdate}${cache.caption ? `\n📝 *Légende :* ${cache.caption}` : ''}\n✨ _Aucune cachette possible ici 😈_`;
   const botNumber = sock.user.id.split(':')[0] + '@s.whatsapp.net';
   const cible = VU_DEST === 'moi' ? botNumber : chatJid;
 
@@ -1055,6 +1058,7 @@ const CATEGORIES_MENU = [
     id: 'outils', emoji: '🛠️', titre: 'Outils & Tech',
     cmds: [
       { groupe: '📸 Médias', noms: ['.v'], desc: 'Revoir une photo / vidéo / vocal en vue unique' },
+      { groupe: '📸 Médias', noms: ['.guerre'], exact: true, desc: 'Envoyer la vidéo guerre.mp4' },
       { groupe: '📸 Médias', noms: ['.pp', '.p'], aff: '.pp', args: '[@mention]', desc: "Photo de profil (groupe & privé)" },
       { groupe: '📸 Médias', noms: ['pipi'], args: '[@mention]', desc: "Photo de profil (pipi, groupe & privé)" },
       { groupe: '📸 Médias', noms: ['.qr'], args: '[texte]', desc: 'Générer un QR code' },
@@ -1085,7 +1089,7 @@ const CATEGORIES_MENU = [
 
 const MENU_REGEX = /^(\.menu|menu|\.help|\.aide)(?:\s+(.+)|(\d+))?$/;
 const NUM_EMOJIS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣'];
-const EMOJIS_REACTION = ['😌', '💅', '🗿', '🧼', '🤦', '🫶', '🤳', '🎗️'];
+const EMOJIS_REACTION = ['🏄', '💅', '🗿', '🇪🇸', '🤦', '🫶', '🤳', '🎗️'];
 
 function normaliserTexte(s) {
   return (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
@@ -1792,6 +1796,14 @@ const GUMBALL_IMAGE = (() => {
     return fs.existsSync(chemin) ? fs.readFileSync(chemin) : null;
   } catch (e) { return null; }
 })();
+// 🎬 Vidéo de la commande .guerre (fichier media/guerre.mp4)
+const GUERRE_VIDEO = (() => {
+  try {
+    const chemin = path.join(__dirname, 'media', 'guerre.mp4');
+    return fs.existsSync(chemin) ? fs.readFileSync(chemin) : null;
+  } catch (e) { return null; }
+})();
+
 // 🎬 Vidéo spéciale « Yasmine » (fichier media/yasmine.mp4)
 const YASMINE_VIDEO = (() => {
   try {
@@ -2257,6 +2269,8 @@ async function startBot() {
 
       const botNumber = sock.user.id.split(':')[0] + '@s.whatsapp.net';
       const isFromBot = msg.key.fromMe || senderJid === botNumber;
+      // Un utilisateur autorisé par le code peut gérer le bot comme le propriétaire pendant cette session.
+      const aAccesAdmin = isFromBot || utilisateursAutorisesMotDePasse.has(senderJid);
 
       let isAdmin = false;
       if (isGroup) {
@@ -2310,14 +2324,14 @@ async function startBot() {
       }
 
       // 🎭 Commande reconnue : réaction immédiate, puis "en train d'écrire…" jusqu'à l'arrivée de la réponse
-      if (estCommandeReconnue(lowerText) && !(data.botPrivateMode && !isFromBot)) {
+      if (estCommandeReconnue(lowerText) && !(data.botPrivateMode && !aAccesAdmin)) {
         await reagirCommande(sock, msg);
         demarrerComposing(sock, remoteJid);
         statsCommandes[senderJid] = (statsCommandes[senderJid] || 0) + 1;
       }
 
       if (lowerText === '.private on' || lowerText === '.private off') {
-        if (!isFromBot) {
+        if (!aAccesAdmin) {
           await envoyerAvecDelai(sock, remoteJid, { text: "⚠️ Seul le propriétaire du bot peut modifier le mode privé !" }, { quoted: msg }, 'texte');
           return;
         }
@@ -2343,15 +2357,27 @@ async function startBot() {
       const commandeAutorisee = /^\.(dico|def|dictionnaire|gamble|gumball)(\s|$)/.test(lowerText)
         || lowerText.trim() === 'yasmine'
         || (gumballEnAttente.has(cleGumball(remoteJid, acteurCourant)) && /^\d{1,2}$/.test(cleanText.trim()));
-      if (data.botPrivateMode && !isFromBot && !commandeAutorisee) {
-        if (cleanText === '2010') {
-          data.botPrivateMode = false;
-          refusPriveDeja.clear();
-          await envoyerAvecDelai(sock, remoteJid, { text: "🔓 *Code secret correct !*" }, { quoted: msg }, 'texte');
+      // 🔑 Le code doit être envoyé en privé après que cette personne a demandé l'accès dans un groupe.
+      // Le code n'est jamais demandé/publié dans le groupe et n'en déverrouille pas l'accès pour les autres.
+      if (!isGroup && !isFromBot && cleanText.trim() === '2010' && demandesAccesPrive.has(senderJid)) {
+        demandesAccesPrive.delete(senderJid);
+        utilisateursAutorisesMotDePasse.add(senderJid);
+        refusPriveDeja.delete(senderJid);
+        await envoyerAvecDelai(sock, remoteJid, { text: "🔓 *Accès administrateur accordé.* Retourne dans le groupe : tes commandes sont maintenant autorisées pendant que le bot reste en ligne." }, {}, 'texte');
+        return;
+      }
+
+      if (data.botPrivateMode && !aAccesAdmin && !commandeAutorisee) {
+        if (isGroup) {
+          // On garde en attente l'identité exacte du membre du groupe; le code en privé ne donne accès qu'à lui.
+          demandesAccesPrive.add(senderJid);
+          if (!refusPriveDeja.has(senderJid)) {
+            refusPriveDeja.add(senderJid);
+            await envoyerAvecDelai(sock, remoteJid, { text: "🤖 Bot en mode privé 🔒\nPour demander l'accès, écris *2010* en message privé au compte du bot. Le code ne doit pas être envoyé dans ce groupe." }, { quoted: msg }, 'texte');
+          }
         } else if (!refusPriveDeja.has(senderJid)) {
-          // Une seule fois par personne : ensuite silence total, même si elle insiste
           refusPriveDeja.add(senderJid);
-          await envoyerAvecDelai(sock, remoteJid, { text: "🤖 en mode privé🔒\nattendez un instant il vous reviendra ☺️" }, { quoted: msg }, 'texte');
+          await envoyerAvecDelai(sock, remoteJid, { text: "🤖 Bot en mode privé 🔒\nSi le bot t'a demandé l'accès dans un groupe, envoie *2010* ici en privé." }, { quoted: msg }, 'texte');
         }
         return;
       }
@@ -2365,7 +2391,7 @@ async function startBot() {
       if (/^\.askwedding(\s|$)/.test(lowerText)) { await commandeAskWedding(sock, msg, remoteJid, acteurDe(msg, sock, remoteJid, senderJid)); return; }
       if (/^\.routine$/.test(lowerText)) { await commandeRoutine(sock, msg, remoteJid); return; }
       if (/^\.del$/.test(lowerText)) {
-        if (!isFromBot) return;
+        if (!aAccesAdmin) return;
         await commandeDel(sock, remoteJid);
         return;
       }
@@ -2381,7 +2407,7 @@ async function startBot() {
       }
 
       if (['.kick', '.promote', '.demote', '.warn', '.mute', '.unmute'].some(cmd => lowerText.startsWith(cmd))) {
-        if (!isFromBot) {
+        if (!aAccesAdmin) {
           await envoyerAvecDelai(sock, remoteJid, { text: "⚠ Réservé au propriétaire du bot !" }, { quoted: msg }, 'texte');
           return;
         }
@@ -2533,8 +2559,17 @@ async function startBot() {
         return;
       }
 
+      if (lowerText.trim() === '.guerre') {
+        if (!GUERRE_VIDEO) {
+          await envoyerAvecDelai(sock, remoteJid, { text: "⚠️ Vidéo introuvable. Ajoute le fichier `media/guerre.mp4` au dépôt GitHub puis redéploie le bot." }, { quoted: msg }, 'texte');
+        } else {
+          await envoyerAvecDelai(sock, remoteJid, { video: GUERRE_VIDEO, mimetype: 'video/mp4', caption: '🎬 *Guerre*' }, { quoted: msg }, 'media');
+        }
+        return;
+      }
+
       if (lowerText.trim() === 'yasmine' && YASMINE_VIDEO) {
-        await envoyerAvecDelai(sock, remoteJid, { video: YASMINE_VIDEO, mimetype: 'video/mp4', caption: '🎬 *Yasmine* 💅' }, { quoted: msg }, 'media');
+        await envoyerAvecDelai(sock, remoteJid, { video: YASMINE_VIDEO, mimetype: 'video/mp4', caption: '🎬 *Yasmine* 💅', viewOnce: true }, { quoted: msg }, 'media');
         return;
       }
 
