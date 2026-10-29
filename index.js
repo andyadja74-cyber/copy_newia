@@ -31,6 +31,8 @@ const {
   DONNEES_CERVEAU,
   COMMENTAIRES_CERVEAU,
   LISTE_DRAGUES,
+  MADARA_REPLIQUES,
+  MADARA_TECHNIQUES,
   vueUniqueCache,
   sessionsMotDePasse,
   profilsJoueurs,
@@ -194,7 +196,7 @@ async function journaliserMessage(sock, msg, { muet = false } = {}) {
 }
 
 // ⏱️ Délai entre deux phrases de drague (modifiable avec la variable Render DRAGUE_DELAI_MS)
-const DELAI_DRAGUE_MS = parseInt(process.env.DRAGUE_DELAI_MS, 10) || 8000;
+const DELAI_DRAGUE_MS = Math.max(1000, parseInt(process.env.DRAGUE_DELAI_MS, 10) || 1000);
 // 🚦 Anti-spam : une commande par utilisateur toutes les 2,5 secondes
 const COOLDOWN_COMMANDE_MS = 2500;
 const dernieresCommandes = new Map();
@@ -250,17 +252,28 @@ setInterval(() => {
 
 // 📁 GESTIONNAIRE DE SESSION LOCAL
 // Plan gratuit Render : pas de disque persistant, on utilise toujours le dossier local (la variable AUTH_DIR est ignorée)
-const AUTH_DIR = path.join(__dirname, 'auth_info');
+// Render : configure AUTH_DIR vers le chemin du disque persistant si tu en as un.
+const AUTH_DIR = path.resolve(process.env.AUTH_DIR || path.join(__dirname, 'auth_info'));
+
 async function getAuthState() {
-  console.log(`📁 Utilisation du stockage local (${AUTH_DIR})...`);
+  // Évite ENOENT si le dossier n'existe pas encore au démarrage.
+  fs.mkdirSync(AUTH_DIR, { recursive: true });
+  console.log(`📁 Dossier de session WhatsApp : ${AUTH_DIR}`);
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+
+  // Baileys peut émettre creds.update pendant une fermeture/reconnexion.
+  // On recrée le dossier avant chaque sauvegarde pour éviter creds.json ENOENT.
+  const saveCredsSafe = async () => {
+    fs.mkdirSync(AUTH_DIR, { recursive: true });
+    await saveCreds();
+  };
+
   return {
     state,
-    saveCreds,
+    saveCreds: saveCredsSafe,
     clearSession: async () => {
-      if (fs.existsSync(AUTH_DIR)) {
-        fs.rmSync(AUTH_DIR, { recursive: true, force: true });
-      }
+      fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+      fs.mkdirSync(AUTH_DIR, { recursive: true });
     }
   };
 }
@@ -268,18 +281,14 @@ async function getAuthState() {
 // ⏱️ SIMULATION DE FRAPPE HUMAINE RÉALISTE (FAÇON "NUMI" / HUMAIN NORMAL SUR LES RÉSEAUX)
 function calculerDelaiEnvoi(texte, typeAction = 'texte') {
   if (typeAction === 'media' || typeAction === 'qr') {
-    return 3000;
+    return 700;
   }
 
   const longueur = texte ? texte.length : 20;
-  // Vitesse de frappe proportionnelle au nombre de caractères (~55ms par caractère)
-  let delaiMs = longueur * 55;
-
-  if (delaiMs < 4500) delaiMs = 4500; // Minimum 4.5 secondes pour que ça fasse naturel
-  if (delaiMs > 20000) delaiMs = 20000; // Plafond à 20 secondes pour les très longs textes
-
-  // Ajout d'une variation aléatoire pour imiter parfaitement un humain qui tape et hésite
-  return Math.floor(delaiMs + (Math.random() * 2500));
+  // Mode rapide : réponses généralement envoyées en moins d'une seconde.
+  // Le délai reste court même pour les textes longs afin de rendre le bot plus réactif.
+  const delaiMs = Math.min(1000, Math.max(250, longueur * 8));
+  return delaiMs + Math.floor(Math.random() * 250);
 }
 
 // 🧵 FILE D'ATTENTE PAR CONVERSATION : un seul message à la fois par chat (comme un humain)
@@ -338,7 +347,7 @@ async function envoyerUnPas(sock, remoteJid, content, options = {}, typeAction =
 
   // Un humain lit d'abord le message avant de répondre
   if (options.quoted && options.quoted.key) {
-    await sleep(entierAlea(600, 1800));
+    await sleep(entierAlea(100, 300));
     try { await sock.readMessages([options.quoted.key]); } catch (e) {}
   }
 
@@ -966,10 +975,10 @@ async function commandeCute(sock, msg, remoteJid, cleanText) {
       try { await sock.readMessages([msg.key]); } catch (e) {}
       for (let i = 0; i < compliments.length; i++) {
         await sock.sendPresenceUpdate('composing', remoteJid);
-        await sleep(1500);
+        await sleep(300);
         await sock.sendMessage(remoteJid, { text: compliments[i] });
         try { await sock.sendPresenceUpdate('paused', remoteJid); } catch (e) {}
-        if (i < compliments.length - 1) await sleep(1500);
+        if (i < compliments.length - 1) await sleep(1000);
       }
     } catch (err) {
       console.error('⚠️ Erreur cute :', err);
@@ -1079,6 +1088,8 @@ const CATEGORIES_MENU = [
       { groupe: '🎭 Fun & Social', noms: ['.dec', '.mensonge'], args: '[texte]', desc: 'Détecteur de mensonges' },
       { groupe: '🎭 Fun & Social', noms: ['drague', '.drague'], aff: 'drague', args: '[@mention] (nombre)', desc: 'Phrases de drague (3 par défaut, jusqu\'à 10)' },
       { groupe: '🎭 Fun & Social', noms: ['.cute'], args: '[nombre]', desc: 'Compliments extra (10 par défaut, jusqu\'à 20)' },
+      { groupe: '🎭 Fun & Social', noms: ['.madara'], args: '[techniques | conseil]', desc: 'Répliques originales façon stratège shinobi' },
+      { groupe: '🎭 Fun & Social', noms: ['.techniques'], exact: true, desc: 'Afficher les techniques fictives inspirées de Naruto' },
       { groupe: '🎭 Fun & Social', noms: ['.askwedding'], args: '[@mention]', desc: 'Demande en mariage ❤️' },
       { groupe: '🎭 Fun & Social', noms: ['.routine'], exact: true, desc: 'La routine de mon créateur 🤣' },
       { groupe: '🎭 Fun & Social', noms: ['.gamble', '.gumball'], aff: '.gamble', exact: true, desc: "Quel Gumball es-tu aujourd'hui ? 🎈" },
@@ -1693,13 +1704,13 @@ async function commandeDrague(sock, msg, remoteJid, senderJid, cleanText) {
       try { await sock.readMessages([msg.key]); } catch (e) {}
       for (let i = 0; i < phrases.length; i++) {
         await sock.sendPresenceUpdate('composing', remoteJid);
-        await sleep(2000);
+        await sleep(250);
         const options = i === 0 ? sansCitationSupprimee({ quoted: msg }) : {};
         const envoye = await sock.sendMessage(remoteJid, { text: phrases[i], mentions: [cibleJid] }, options);
         if (envoye?.key?.id) processedMessages.add(envoye.key.id);
         try { await sock.sendPresenceUpdate('paused', remoteJid); } catch (e) {}
-        // ⏱️ Intervalle total entre deux envois = DELAI_DRAGUE_MS (8 secondes par défaut)
-        if (i < phrases.length - 1) await sleep(Math.max(0, DELAI_DRAGUE_MS - 2000));
+        // ⚡ Mode rapide : environ 1 seconde entre deux messages
+        if (i < phrases.length - 1) await sleep(Math.max(1000, DELAI_DRAGUE_MS));
       }
     } catch (err) {
       console.error('⚠️ Erreur drague :', err);
@@ -2097,8 +2108,25 @@ async function commandeFiche(sock, msg, remoteJid, senderJid) {
 }
 
 let sock = null;
+let reconnectTimer = null;
+let demarrageEnCours = false;
+
+function programmerRedemarrage(delaiMs, raison) {
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  console.log(`🔄 Redémarrage programmé dans ${Math.round(delaiMs / 1000)} s (${raison}).`);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    startBot().catch(e => console.error('❌ Erreur redémarrage :', e));
+  }, delaiMs);
+}
 
 async function startBot() {
+  if (demarrageEnCours) {
+    console.log('ℹ️ Démarrage déjà en cours, tentative ignorée.');
+    return;
+  }
+  demarrageEnCours = true;
+  try {
   if (sock) {
     try {
       sock.ev.removeAllListeners();
@@ -2146,24 +2174,30 @@ async function startBot() {
       const errorMessage = lastDisconnect?.error?.message || "";
       console.log(`❌ Connexion fermée. Code : ${statusCode} | Erreur : ${errorMessage}`);
 
+      // Désactive l'ancien socket avant de nettoyer ou relancer sa session.
+      try {
+        sock.ev.removeAllListeners();
+        sock.ws.close();
+      } catch (e) {}
+
       if (statusCode === DisconnectReason.loggedOut) {
-        console.log("❌ Appareil déconnecté depuis WhatsApp. Nettoyage de la session...");
-        await clearSession();
-        console.log("🔄 Nouvelle tentative dans 5 secondes (nouveau code de jumelage)...");
-        setTimeout(() => startBot().catch(e => console.error('❌ Erreur redémarrage :', e)), 5000);
+        console.log("❌ Session WhatsApp déconnectée (loggedOut). Réinitialisation de la session locale...");
+        try {
+          // Retire le listener de sauvegarde de l'ancien socket avant de supprimer les fichiers.
+          await clearSession();
+        } catch (e) {
+          console.error('⚠️ Nettoyage de session impossible :', e?.message || e);
+        }
+        programmerRedemarrage(5000, 'nouveau jumelage nécessaire');
         return;
       }
 
-      // Après la saisie du code, WhatsApp coupe volontairement la connexion (code 515 "restart required").
-      // Il FAUT relancer le bot, sinon le jumelage n'est jamais terminé.
-      const dejaJumele = !!(sock && sock.authState && sock.authState.creds && sock.authState.creds.registered);
+      // Utilise l'état d'authentification capturé au démarrage : sock.authState n'est pas garanti par Baileys.
+      const dejaJumele = !!state.creds.registered;
       if (statusCode === DisconnectReason.restartRequired || dejaJumele) {
-        console.log("🔄 Reconnexion dans 3 secondes...");
-        setTimeout(() => startBot().catch(e => console.error('❌ Erreur redémarrage :', e)), 3000);
+        programmerRedemarrage(3000, 'reconnexion après fermeture');
       } else {
-        // Fermeture inattendue (ex : jumelage refusé ou coupé) : on relance pour ne pas rester bloqué
-        console.log("🔄 Fermeture inattendue, nouvelle tentative dans 10 secondes...");
-        setTimeout(() => startBot().catch(e => console.error('❌ Erreur redémarrage :', e)), 10000);
+        programmerRedemarrage(10000, 'connexion interrompue ou jumelage non terminé');
       }
     } else if (connection === 'open') {
       console.log('⚡ TITAN BOT PRÊT ET CONNECTÉ !');
@@ -2174,21 +2208,23 @@ async function startBot() {
     const rawNumber = process.env.PHONE_NUMBER || "225XXXXXXXXXX";
     const phoneNumber = rawNumber.replace(/[^0-9]/g, "");
     if (!process.env.PHONE_NUMBER || phoneNumber.length < 10 || rawNumber.includes('X')) {
-      console.error(`⚠️ PHONE_NUMBER invalide ou absent (valeur utilisée : « ${phoneNumber} »). Mets ton numéro complet avec l'indicatif, ex : 2250700000000, dans les variables Render.`);
+      console.error('⚠️ PHONE_NUMBER absent ou invalide. Dans Render, définis PHONE_NUMBER avec le numéro complet et son indicatif, chiffres uniquement (ex. 2250700000000).');
+    } else {
+      console.log(`📞 Demande de code de jumelage pour : +${phoneNumber}`);
+      setTimeout(async () => {
+        // Ne demande pas un code sur un socket qui a déjà été remplacé/fermé.
+        if (!sock || sock.user || sock.ws?.readyState === 3) return;
+        try {
+          let code = await sock.requestPairingCode(phoneNumber);
+          code = code?.match(/.{1,4}/g)?.join("-") || code;
+          console.log(`\n==================================`);
+          console.log(`👉 CODE DE JUMELAGE : ${code}`);
+          console.log(`==================================\n`);
+        } catch (err) {
+          console.error('❌ Code de jumelage impossible :', err?.message || err);
+        }
+      }, 6000);
     }
-    console.log(`📞 Jumelage demandé pour le numéro : +${phoneNumber}`);
-
-    setTimeout(async () => {
-      try {
-        let code = await sock.requestPairingCode(phoneNumber);
-        code = code?.match(/.{1,4}/g)?.join("-") || code;
-        console.log(`\n==================================`);
-        console.log(`👉 CODE DE JUMELAGE : ${code}`);
-        console.log(`==================================\n`);
-      } catch (err) {
-        console.error("❌ Erreur de génération du Pairing Code :", err);
-      }
-    }, 6000);
   }
 
   // 🛡 DÉTECTION DES MESSAGES SUPPRIMÉS (ANTI-DELETE)
@@ -2387,6 +2423,26 @@ async function startBot() {
 
       if (await gererReponseMariage(sock, remoteJid, senderJid, lowerText)) return;
 
+      if (/^\.madara(?:\s|$)/i.test(cleanText)) {
+        const arg = cleanText.replace(/^\.madara\s*/i, '').trim().toLowerCase();
+        let reponse;
+        if (['technique', 'techniques', 'pouvoir', 'pouvoirs'].includes(arg)) {
+          reponse = `🌀 *ARCHIVES SHINOBI — TECHNIQUES*\n\n${MADARA_TECHNIQUES.map((t, i) => `${i + 1}. ${t}`).join('\n\n')}\n\n_Tape .madara pour recevoir une pensée stratégique._`;
+        } else if (['conseil', 'strategie', 'stratégie'].includes(arg)) {
+          reponse = `♟️ *Conseil du stratège*\n${alea(MADARA_REPLIQUES)}`;
+        } else if (['qui es-tu', 'identite', 'identité'].includes(arg)) {
+          reponse = "🌑 Je suis une voix fictive inspirée d'un stratège shinobi : calme, calculateur et attentif au prochain mouvement.";
+        } else {
+          reponse = `🌑 *Parole du stratège*\n${alea(MADARA_REPLIQUES)}\n\n_Tape *.madara techniques* pour consulter les pouvoirs fictifs._`;
+        }
+        await envoyerAvecDelai(sock, remoteJid, { text: reponse }, { quoted: msg }, 'texte');
+        return;
+      }
+      if (lowerText.trim() === '.techniques') {
+        const reponse = `🌀 *ARCHIVES SHINOBI — TECHNIQUES*\n\n${MADARA_TECHNIQUES.map((t, i) => `${i + 1}. ${t}`).join('\n\n')}`;
+        await envoyerAvecDelai(sock, remoteJid, { text: reponse }, { quoted: msg }, 'texte');
+        return;
+      }
       if (/^\.cute(\s|$)/.test(lowerText)) { await commandeCute(sock, msg, remoteJid, cleanText); return; }
       if (/^\.askwedding(\s|$)/.test(lowerText)) { await commandeAskWedding(sock, msg, remoteJid, acteurDe(msg, sock, remoteJid, senderJid)); return; }
       if (/^\.routine$/.test(lowerText)) { await commandeRoutine(sock, msg, remoteJid); return; }
@@ -2512,7 +2568,7 @@ async function startBot() {
         if (nombreFois > 10) nombreFois = 10;
 
         for (let i = 0; i < nombreFois; i++) {
-          if (i > 0) await new Promise(resolve => setTimeout(resolve, 3000));
+          if (i > 0) await new Promise(resolve => setTimeout(resolve, 1000));
           await sock.sendMessage(remoteJid, { text: phraseARepeter });
         }
         return;
@@ -2681,6 +2737,9 @@ async function startBot() {
       try { if (sock) arreterComposing(sock, m.messages[0]?.key?.remoteJid); } catch (e) {}
     }
   });
+  } finally {
+    demarrageEnCours = false;
+  }
 }
 
-startBot();
+startBot().catch(e => console.error('❌ Échec du démarrage initial :', e));
