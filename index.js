@@ -2461,11 +2461,11 @@ async function startBot() {
           demandesAccesPrive.add(senderJid);
           if (!refusPriveDeja.has(senderJid)) {
             refusPriveDeja.add(senderJid);
-            await envoyerAvecDelai(sock, remoteJid, { text: "🤖 Bot en mode privé 🔒\nPour demander l'accès, écris *2010* en message privé au compte du bot. Le code ne doit pas être envoyé dans ce groupe." }, { quoted: msg }, 'texte');
+            await envoyerAvecDelai(sock, remoteJid, { text: "Je vais t'écrire après 🔒\nJe suis un peu occupé" }, { quoted: msg }, 'texte');
           }
         } else if (!refusPriveDeja.has(senderJid)) {
           refusPriveDeja.add(senderJid);
-          await envoyerAvecDelai(sock, remoteJid, { text: "🤖 Bot en mode privé 🔒\nSi le bot t'a demandé l'accès dans un groupe, envoie *2010* ici en privé." }, { quoted: msg }, 'texte');
+          await envoyerAvecDelai(sock, remoteJid, { text: "Pas libre 🔒\nAtt je suis un peu occupé enfaite" }, { quoted: msg }, 'texte');
         }
         return;
       }
