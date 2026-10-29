@@ -653,6 +653,50 @@ function preparerBinaires() {
 }
 preparerBinaires().catch(e => console.error('[AUDIO] ⚠️ Préparation de ffmpeg :', e && e.message ? e.message : e));
 
+// 🎙️ Audios préenregistrés envoyés comme de vrais vocaux WhatsApp (OGG/Opus + ptt:true).
+const AUDIO_MEDIA_DIR = path.join(__dirname, 'media');
+const AUDIO_VOCAL_CACHE = new Map();
+
+function convertirEnVocalOpus(cheminSource) {
+  return new Promise(async (resolve, reject) => {
+    try {
+      await preparerBinaires();
+      if (!bin.ffmpeg) return reject(new Error('FFmpeg est introuvable sur le serveur.'));
+      fs.mkdirSync(TMP_DIR, { recursive: true });
+      const cheminSortie = path.join(TMP_DIR, `vocal-${path.basename(cheminSource, path.extname(cheminSource))}-${Date.now()}.ogg`);
+      const proc = spawn(bin.ffmpeg, ['-y', '-i', cheminSource, '-vn', '-ac', '1', '-ar', '48000', '-c:a', 'libopus', '-b:a', '32k', '-application', 'voip', cheminSortie], { stdio: ['ignore', 'ignore', 'pipe'] });
+      let erreur = '';
+      proc.stderr.on('data', d => { erreur += d.toString(); });
+      proc.on('error', reject);
+      proc.on('close', code => {
+        if (code === 0 && fs.existsSync(cheminSortie) && fs.statSync(cheminSortie).size > 100) resolve(cheminSortie);
+        else reject(new Error(`Conversion audio impossible. ${erreur.slice(-300)}`));
+      });
+    } catch (e) { reject(e); }
+  });
+}
+
+async function envoyerFichierEnVocal(sock, msg, remoteJid, nomFichier) {
+  const chemin = path.join(AUDIO_MEDIA_DIR, nomFichier);
+  if (!fs.existsSync(chemin)) {
+    await envoyerAvecDelai(sock, remoteJid, { text: `⚠️ Audio introuvable : ajoute le fichier *media/${nomFichier}* dans GitHub, puis redéploie le bot.` }, { quoted: msg }, 'texte');
+    return;
+  }
+  let vocalPath = AUDIO_VOCAL_CACHE.get(nomFichier);
+  // Les fichiers MP3 doivent être convertis en OGG/Opus pour apparaître comme des vocaux.
+  if (!vocalPath || !fs.existsSync(vocalPath)) {
+    vocalPath = await convertirEnVocalOpus(chemin);
+    AUDIO_VOCAL_CACHE.set(nomFichier, vocalPath);
+  }
+  const buffer = fs.readFileSync(vocalPath);
+  await envoyerAvecDelai(sock, remoteJid, {
+    audio: buffer,
+    mimetype: 'audio/ogg; codecs=opus',
+    ptt: true
+  }, { quoted: msg }, 'media');
+}
+
+
 // 🎙️ ═══════════════════════════════════════════════════════════
 // .voc [texte] → le bot répond en VOCAL avec une voix d'homme grave et posée
 // (voix française de synthèse, puis ffmpeg : on baisse la hauteur et on ralentit)
@@ -1068,6 +1112,8 @@ const CATEGORIES_MENU = [
     cmds: [
       { groupe: '📸 Médias', noms: ['.v'], desc: 'Revoir une photo / vidéo / vocal en vue unique' },
       { groupe: '📸 Médias', noms: ['.guerre'], exact: true, desc: 'Envoyer la vidéo guerre.mp4' },
+      { groupe: '📸 Médias', noms: ['.melodie'], exact: true, desc: 'Envoyer musique.mp3 sous forme de vocal' },
+      { groupe: '📸 Médias', noms: ['.rire'], exact: true, desc: 'Envoyer rire.mp3 sous forme de vocal' },
       { groupe: '📸 Médias', noms: ['.pp', '.p'], aff: '.pp', args: '[@mention]', desc: "Photo de profil (groupe & privé)" },
       { groupe: '📸 Médias', noms: ['pipi'], args: '[@mention]', desc: "Photo de profil (pipi, groupe & privé)" },
       { groupe: '📸 Médias', noms: ['.qr'], args: '[texte]', desc: 'Générer un QR code' },
@@ -2322,6 +2368,12 @@ async function startBot() {
       const cleanText = (msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || msg.message.videoMessage?.caption || "").trim();
       const lowerText = cleanText.toLowerCase();
 
+      // 🤖 Réponse vocale automatique aux questions sur l'identité du bot.
+      if (!isFromBot && cleanText && /(?:qui es[- ]tu|qui est[- ]tu|comment te nommes[- ]tu|comment tu t'appelles|quel est ton nom|c'est quoi ton nom|ton nom c'est quoi)/i.test(normaliserTexte(cleanText))) {
+        await envoyerFichierEnVocal(sock, msg, remoteJid, 'sound.mp3');
+        return;
+      }
+
       // 🧹 Commande lancée par le propriétaire : le message tapé est effacé tout de suite
       if (isFromBot && msg.key.fromMe && (/^\.[a-z0-9]/i.test(cleanText) || estCommandeReconnue(lowerText))) {
         await effacerMessage(sock, remoteJid, msg.key);
@@ -2612,6 +2664,24 @@ async function startBot() {
 
       if (/^\.?drague(\s|$)/.test(lowerText)) {
         await commandeDrague(sock, msg, remoteJid, acteurDe(msg, sock, remoteJid, senderJid), cleanText);
+        return;
+      }
+
+      if (lowerText.trim() === '.melodie') {
+        try { await envoyerFichierEnVocal(sock, msg, remoteJid, 'musique.mp3'); }
+        catch (e) {
+          console.error('[AUDIO] .melodie :', e && e.message ? e.message : e);
+          await envoyerAvecDelai(sock, remoteJid, { text: "⚠️ Je n'ai pas réussi à préparer le vocal. Vérifie que FFmpeg est disponible sur Render et que `media/musique.mp3` est bien présent." }, { quoted: msg }, 'texte');
+        }
+        return;
+      }
+
+      if (lowerText.trim() === '.rire') {
+        try { await envoyerFichierEnVocal(sock, msg, remoteJid, 'rire.mp3'); }
+        catch (e) {
+          console.error('[AUDIO] .rire :', e && e.message ? e.message : e);
+          await envoyerAvecDelai(sock, remoteJid, { text: "⚠️ Je n'ai pas réussi à préparer le vocal. Vérifie que FFmpeg est disponible sur Render et que `media/rire.mp3` est bien présent." }, { quoted: msg }, 'texte');
+        }
         return;
       }
 
