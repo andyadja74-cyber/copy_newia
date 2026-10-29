@@ -278,17 +278,19 @@ async function getAuthState() {
   };
 }
 
-// ⏱️ SIMULATION DE FRAPPE HUMAINE RÉALISTE (FAÇON "NUMI" / HUMAIN NORMAL SUR LES RÉSEAUX)
+// ⏱️ DÉLAI D'ENVOI VARIABLE : 5 à 10 secondes minimum, plus long pour les grands textes.
 function calculerDelaiEnvoi(texte, typeAction = 'texte') {
-  if (typeAction === 'media' || typeAction === 'qr') {
-    return 700;
-  }
+  // Base aléatoire comprise entre 5 et 10 secondes pour tous les types d'envoi.
+  const delaiDeBase = entierAlea(5000, 10000);
 
-  const longueur = texte ? texte.length : 20;
-  // Mode rapide : réponses généralement envoyées en moins d'une seconde.
-  // Le délai reste court même pour les textes longs afin de rendre le bot plus réactif.
-  const delaiMs = Math.min(1000, Math.max(250, longueur * 8));
-  return delaiMs + Math.floor(Math.random() * 250);
+  // Les textes longs prennent un peu plus de temps ; au-delà de 200 caractères,
+  // chaque caractère supplémentaire ajoute 25 ms, avec un supplément plafonné à 15 s.
+  const longueur = texte ? String(texte).trim().length : 0;
+  const supplementTexte = typeAction === 'texte'
+    ? Math.min(15000, Math.max(0, longueur - 200) * 25)
+    : 0;
+
+  return delaiDeBase + supplementTexte;
 }
 
 // 🧵 FILE D'ATTENTE PAR CONVERSATION : un seul message à la fois par chat (comme un humain)
@@ -1114,6 +1116,7 @@ const CATEGORIES_MENU = [
       { groupe: '📸 Médias', noms: ['.guerre'], exact: true, desc: 'Envoyer la vidéo guerre.mp4' },
       { groupe: '📸 Médias', noms: ['.melodie'], exact: true, desc: 'Envoyer musique.mp3 sous forme de vocal' },
       { groupe: '📸 Médias', noms: ['.rire'], exact: true, desc: 'Envoyer rire.mp3 sous forme de vocal' },
+      { groupe: '📸 Médias', noms: ['.sad'], exact: true, desc: 'Envoyer sad.mp3 sous forme de vocal' },
       { groupe: '📸 Médias', noms: ['.pp', '.p'], aff: '.pp', args: '[@mention]', desc: "Photo de profil (groupe & privé)" },
       { groupe: '📸 Médias', noms: ['pipi'], args: '[@mention]', desc: "Photo de profil (pipi, groupe & privé)" },
       { groupe: '📸 Médias', noms: ['.qr'], args: '[texte]', desc: 'Générer un QR code' },
@@ -2461,11 +2464,11 @@ async function startBot() {
           demandesAccesPrive.add(senderJid);
           if (!refusPriveDeja.has(senderJid)) {
             refusPriveDeja.add(senderJid);
-            await envoyerAvecDelai(sock, remoteJid, { text: "Je vais t'écrire après 🔒\nJe suis un peu occupé" }, { quoted: msg }, 'texte');
+            await envoyerAvecDelai(sock, remoteJid, { text: "🤖 Bot en mode privé 🔒\nPour demander l'accès, écris *2010* en message privé au compte du bot. Le code ne doit pas être envoyé dans ce groupe." }, { quoted: msg }, 'texte');
           }
         } else if (!refusPriveDeja.has(senderJid)) {
           refusPriveDeja.add(senderJid);
-          await envoyerAvecDelai(sock, remoteJid, { text: "Pas libre 🔒\nAtt je suis un peu occupé enfaite" }, { quoted: msg }, 'texte');
+          await envoyerAvecDelai(sock, remoteJid, { text: "🤖 Bot en mode privé 🔒\nSi le bot t'a demandé l'accès dans un groupe, envoie *2010* ici en privé." }, { quoted: msg }, 'texte');
         }
         return;
       }
@@ -2664,6 +2667,15 @@ async function startBot() {
 
       if (/^\.?drague(\s|$)/.test(lowerText)) {
         await commandeDrague(sock, msg, remoteJid, acteurDe(msg, sock, remoteJid, senderJid), cleanText);
+        return;
+      }
+
+      if (lowerText.trim() === '.sad') {
+        try { await envoyerFichierEnVocal(sock, msg, remoteJid, 'sad.mp3'); }
+        catch (e) {
+          console.error('[AUDIO] .sad :', e && e.message ? e.message : e);
+          await envoyerAvecDelai(sock, remoteJid, { text: "⚠️ Je n'ai pas réussi à préparer le vocal. Vérifie que FFmpeg est disponible sur Render et que `media/sad.mp3` est bien présent." }, { quoted: msg }, 'texte');
+        }
         return;
       }
 
