@@ -75,7 +75,7 @@ const UA = 'TitanBot/1.0 (bot WhatsApp personnel)';
 // JOURNAL DES MESSAGES : qui écrit, où (contact ou groupe), quel type, quel contenu
 // Désactivable avec la variable d'environnement LOG_MESSAGES=off
 // ═══════════════════════════════════════════════════════════
-const LOG_MESSAGES_ACTIF = !['off', '0', 'non', 'false'].includes((process.env.LOG_MESSAGES || 'on').trim().toLowerCase());
+const LOG_MESSAGES_ACTIF = ['on', '1', 'oui', 'true'].includes((process.env.LOG_MESSAGES || 'off').trim().toLowerCase());
 const contactsConnus = new Map();   // jid -> { nom (nom enregistré dans ton téléphone), pseudo (nom de profil) }
 const groupesConnus = new Map();    // jid -> { nom, expire }
 const DUREE_CACHE_GROUPE_MS = 60 * 60 * 1000;
@@ -234,7 +234,7 @@ function choisirImageMenu(cat) {
   return MENU_IMAGES[i];
 }
 
-process.on('uncaughtException', (err) => console.error('⚠️️ Erreur évitée :', err));
+process.on('uncaughtException', (err) => { console.error('💥 Erreur non récupérable :', err); process.exit(1); });
 process.on('unhandledRejection', (reason) => console.error('⚠️ Promesse rejetée :', reason));
 
 app.get("/", (req, res) => res.send("⚡ *ATOMIC*"));
@@ -242,13 +242,8 @@ app.get("/health", (req, res) => res.status(200).send("OK"));
 
 app.listen(PORT, () => console.log(`🌐 Serveur actif sur le port ${PORT}`));
 
-setInterval(() => {
-  const renderUrl = process.env.RENDER_EXTERNAL_URL;
-  if (renderUrl) {
-    https.get(renderUrl, (res) => console.log(`⏰ Keep-Alive Status: ${res.statusCode}`))
-        .on('error', (err) => console.error('⚠️ Erreur Keep-Alive :', err.message));
-  }
-}, 5 * 60 * 1000);
+// Aucun auto-ping vers soi-même : une requête sortante ne garantit pas
+// que Render reçoit du trafic entrant. Utiliser un moniteur externe si nécessaire.
 
 // 📁 GESTIONNAIRE DE SESSION LOCAL
 // Plan gratuit Render : pas de disque persistant, on utilise toujours le dossier local (la variable AUTH_DIR est ignorée)
@@ -2159,122 +2154,138 @@ async function commandeFiche(sock, msg, remoteJid, senderJid) {
 let sock = null;
 let reconnectTimer = null;
 let demarrageEnCours = false;
+let tentativesReconnexion = 0;
+let attenteJumelageManuel = false;
+let arretDemande = false;
 
 function programmerRedemarrage(delaiMs, raison) {
+  if (arretDemande || attenteJumelageManuel) return;
   if (reconnectTimer) clearTimeout(reconnectTimer);
   console.log(`🔄 Redémarrage programmé dans ${Math.round(delaiMs / 1000)} s (${raison}).`);
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
-    startBot().catch(e => console.error('❌ Erreur redémarrage :', e));
+    startBot().catch(e => console.error('❌ Erreur redémarrage :', e?.message || e));
   }, delaiMs);
 }
 
+function delaiReconnexion() {
+  // Backoff progressif plafonné à 60 secondes pour éviter une boucle agressive.
+  const delai = Math.min(60000, 5000 * (2 ** Math.min(tentativesReconnexion, 4)));
+  tentativesReconnexion++;
+  return delai;
+}
+
 async function startBot() {
-  if (demarrageEnCours) {
-    console.log('ℹ️ Démarrage déjà en cours, tentative ignorée.');
+  if (demarrageEnCours || arretDemande || attenteJumelageManuel) {
+    console.log('ℹ️ Démarrage ignoré : démarrage déjà actif, arrêt demandé ou jumelage à effectuer manuellement.');
     return;
   }
   demarrageEnCours = true;
+  let socketLocal = null;
+  let timerCode = null;
   try {
-  if (sock) {
-    try {
-      sock.ev.removeAllListeners();
-      sock.ws.close();
-    } catch (e) {}
-  }
+    if (sock) {
+      try { sock.ev.removeAllListeners(); sock.ws.close(); } catch (e) {}
+      sock = null;
+    }
 
-  const { state, saveCreds, clearSession } = await getAuthState();
-  const { version } = await fetchLatestBaileysVersion();
+    const { state, saveCreds, clearSession } = await getAuthState();
+    const { version } = await fetchLatestBaileysVersion();
 
-  sock = makeWASocket({
-    version,
-    auth: state,
-    logger: pino({ level: 'silent' }),
-    printQRInTerminal: false,
-    browser: Browsers.ubuntu('Chrome'),
-    markOnlineOnConnect: false,
-    connectTimeoutMs: 60000,
-    defaultQueryTimeoutMs: 60000,
-    keepAliveIntervalMs: 25000
-  });
+    socketLocal = makeWASocket({
+      version,
+      auth: state,
+      logger: pino({ level: 'silent' }),
+      printQRInTerminal: false,
+      browser: Browsers.ubuntu('Chrome'),
+      markOnlineOnConnect: false,
+      connectTimeoutMs: 60000,
+      defaultQueryTimeoutMs: 60000,
+      keepAliveIntervalMs: 25000
+    });
+    sock = socketLocal;
 
-  sock.ev.on('creds.update', saveCreds);
+    socketLocal.ev.on('creds.update', () => {
+      saveCreds().catch(e => console.error('⚠️ Sauvegarde de session impossible :', e?.message || e));
+    });
 
-  // 🏷️ Noms pour les logs : contacts enregistrés dans le téléphone et sujets des groupes
-  sock.ev.on('contacts.upsert', (liste) => liste.forEach(memoriserContact));
-  sock.ev.on('contacts.update', (liste) => liste.forEach(memoriserContact));
-  sock.ev.on('messaging-history.set', ({ contacts }) => (contacts || []).forEach(memoriserContact));
-  sock.ev.on('groups.upsert', (liste) => liste.forEach(g => {
-    if (g.id) groupesConnus.set(g.id, { nom: g.subject || 'Groupe sans nom', expire: Date.now() + DUREE_CACHE_GROUPE_MS });
-  }));
-  sock.ev.on('groups.update', (liste) => liste.forEach(g => {
-    if (g.id && g.subject) groupesConnus.set(g.id, { nom: g.subject, expire: Date.now() + DUREE_CACHE_GROUPE_MS });
-  }));
+    socketLocal.ev.on('contacts.upsert', liste => liste.forEach(memoriserContact));
+    socketLocal.ev.on('contacts.update', liste => liste.forEach(memoriserContact));
+    socketLocal.ev.on('messaging-history.set', ({ contacts }) => (contacts || []).forEach(memoriserContact));
+    socketLocal.ev.on('groups.upsert', liste => liste.forEach(g => {
+      if (g.id) groupesConnus.set(g.id, { nom: g.subject || 'Groupe sans nom', expire: Date.now() + DUREE_CACHE_GROUPE_MS });
+    }));
+    socketLocal.ev.on('groups.update', liste => liste.forEach(g => {
+      if (g.id && g.subject) groupesConnus.set(g.id, { nom: g.subject, expire: Date.now() + DUREE_CACHE_GROUPE_MS });
+    }));
 
-  // 👁️ Vue unique : listener dédié
-  installerVueUnique(sock);
+    installerVueUnique(socketLocal);
 
-  // 🔄 Reconnexion automatique (voir plus bas)
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect } = update;
+    socketLocal.ev.on('connection.update', async update => {
+      if (socketLocal !== sock) return; // Ignore les événements d'un ancien socket.
+      const { connection, lastDisconnect } = update;
 
-    if (connection === 'close') {
+      if (connection === 'open') {
+        tentativesReconnexion = 0;
+        if (timerCode) { clearTimeout(timerCode); timerCode = null; }
+        console.log('⚡ TITAN BOT PRÊT ET CONNECTÉ !');
+        return;
+      }
+      if (connection !== 'close') return;
+
+      if (timerCode) { clearTimeout(timerCode); timerCode = null; }
       const statusCode = lastDisconnect?.error?.output?.statusCode;
-      const errorMessage = lastDisconnect?.error?.message || "";
-      console.log(`❌ Connexion fermée. Code : ${statusCode} | Erreur : ${errorMessage}`);
+      const errorMessage = lastDisconnect?.error?.message || String(lastDisconnect?.error || 'Erreur inconnue');
+      const dejaJumele = !!state.creds.registered;
+      console.log(`❌ Connexion fermée. Code : ${statusCode ?? 'inconnu'} | Erreur : ${errorMessage}`);
 
-      // Désactive l'ancien socket avant de nettoyer ou relancer sa session.
-      try {
-        sock.ev.removeAllListeners();
-        sock.ws.close();
-      } catch (e) {}
+      try { socketLocal.ev.removeAllListeners(); socketLocal.ws.close(); } catch (e) {}
+      if (sock === socketLocal) sock = null;
 
-      if (statusCode === DisconnectReason.loggedOut) {
-        console.log("❌ Session WhatsApp déconnectée (loggedOut). Réinitialisation de la session locale...");
-        try {
-          // Retire le listener de sauvegarde de l'ancien socket avant de supprimer les fichiers.
-          await clearSession();
-        } catch (e) {
-          console.error('⚠️ Nettoyage de session impossible :', e?.message || e);
-        }
-        programmerRedemarrage(5000, 'nouveau jumelage nécessaire');
+      // Un 401 n'efface les identifiants QUE si cette session avait déjà été jumelée.
+      // Un 401 pendant le premier jumelage ne doit jamais déclencher un effacement en boucle.
+      if (statusCode === DisconnectReason.loggedOut && dejaJumele) {
+        console.log('🔐 WhatsApp a réellement invalidé une session déjà jumelée. Nettoyage unique des identifiants.');
+        try { await clearSession(); }
+        catch (e) { console.error('⚠️ Nettoyage de session impossible :', e?.message || e); }
+        attenteJumelageManuel = true;
+        console.log('🟠 Session réinitialisée. Vérifie PHONE_NUMBER puis redémarre le service Render pour demander un nouveau code.');
         return;
       }
 
-      // Utilise l'état d'authentification capturé au démarrage : sock.authState n'est pas garanti par Baileys.
-      const dejaJumele = !!state.creds.registered;
-      if (statusCode === DisconnectReason.restartRequired || dejaJumele) {
-        programmerRedemarrage(3000, 'reconnexion après fermeture');
-      } else {
-        programmerRedemarrage(10000, 'connexion interrompue ou jumelage non terminé');
+      if (!dejaJumele) {
+        attenteJumelageManuel = true;
+        console.error('🟠 Le jumelage initial a échoué ou expiré. Aucun effacement de session et aucun nouveau code automatique pour éviter la boucle. Vérifie PHONE_NUMBER, puis redémarre le service Render et saisis le code rapidement.');
+        return;
       }
-    } else if (connection === 'open') {
-      console.log('⚡ TITAN BOT PRÊT ET CONNECTÉ !');
-    }
-  });
 
-  if (!sock.authState.creds.registered) {
-    const rawNumber = process.env.PHONE_NUMBER || "225XXXXXXXXXX";
-    const phoneNumber = rawNumber.replace(/[^0-9]/g, "");
-    if (!process.env.PHONE_NUMBER || phoneNumber.length < 10 || rawNumber.includes('X')) {
-      console.error('⚠️ PHONE_NUMBER absent ou invalide. Dans Render, définis PHONE_NUMBER avec le numéro complet et son indicatif, chiffres uniquement (ex. 2250700000000).');
-    } else {
-      console.log(`📞 Demande de code de jumelage pour : +${phoneNumber}`);
-      setTimeout(async () => {
-        // Ne demande pas un code sur un socket qui a déjà été remplacé/fermé.
-        if (!sock || sock.user || sock.ws?.readyState === 3) return;
-        try {
-          let code = await sock.requestPairingCode(phoneNumber);
-          code = code?.match(/.{1,4}/g)?.join("-") || code;
-          console.log(`\n==================================`);
-          console.log(`👉 CODE DE JUMELAGE : ${code}`);
-          console.log(`==================================\n`);
-        } catch (err) {
-          console.error('❌ Code de jumelage impossible :', err?.message || err);
-        }
-      }, 6000);
+      programmerRedemarrage(delaiReconnexion(), 'reconnexion après fermeture WhatsApp');
+    });
+
+    if (!state.creds.registered) {
+      const rawNumber = process.env.PHONE_NUMBER || '';
+      const phoneNumber = rawNumber.replace(/[^0-9]/g, '');
+      if (!process.env.PHONE_NUMBER || phoneNumber.length < 10 || /X/i.test(rawNumber)) {
+        attenteJumelageManuel = true;
+        console.error('⚠️ PHONE_NUMBER absent ou invalide. Définis cette variable Render avec indicatif pays + numéro, chiffres uniquement.');
+      } else {
+        console.log('📞 Préparation d’un unique code de jumelage pour ce démarrage.');
+        timerCode = setTimeout(async () => {
+          if (socketLocal !== sock || socketLocal.user || socketLocal.ws?.readyState === 3 || attenteJumelageManuel) return;
+          try {
+            let code = await socketLocal.requestPairingCode(phoneNumber);
+            code = code?.match(/.{1,4}/g)?.join('-') || code;
+            console.log('\n==================================');
+            console.log(`👉 CODE DE JUMELAGE : ${code}`);
+            console.log('==================================\n');
+          } catch (err) {
+            attenteJumelageManuel = true;
+            console.error('❌ Demande de code échouée. Pas de nouvelle tentative automatique :', err?.message || err);
+            console.error('🟠 Redémarre le service Render manuellement après avoir vérifié le numéro et la connexion.');
+          }
+        }, 6000);
+      }
     }
-  }
 
   // 🛡 DÉTECTION DES MESSAGES SUPPRIMÉS (ANTI-DELETE)
   // Les messages que TOI (le compte du bot) supprimes ne sont jamais renvoyés : seulement ceux des autres.
@@ -2824,4 +2835,15 @@ async function startBot() {
   }
 }
 
-startBot().catch(e => console.error('❌ Échec du démarrage initial :', e));
+async function arreterProprement(signal) {
+  if (arretDemande) return;
+  arretDemande = true;
+  console.log(`🛑 Arrêt demandé (${signal}).`);
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  try { if (sock) { sock.ev.removeAllListeners(); sock.ws.close(); } } catch (e) {}
+  process.exit(0);
+}
+process.once('SIGTERM', () => arreterProprement('SIGTERM'));
+process.once('SIGINT', () => arreterProprement('SIGINT'));
+
+startBot().catch(e => console.error('❌ Échec du démarrage initial :', e?.message || e));
