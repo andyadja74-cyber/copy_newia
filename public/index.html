@@ -1,1 +1,175 @@
+<!DOCTYPE html>
+<html lang="fr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>LEYBOTDY · Connecte ton bot</title>
+<style>
+:root{--ice:#9fe3ff;--ice2:#6fb6ff;--txt:#eaf6ff;--mut:#8aa5bb;--ok:#7ff0d0;--no:#ff8f9d}
+*{box-sizing:border-box;margin:0}
+html,body{min-height:100%}
+body{background:#02050b;color:var(--txt);font:16px/1.5 -apple-system,"SF Pro Display","Segoe UI",system-ui,sans-serif;display:grid;place-items:center;padding:max(24px,env(safe-area-inset-top)) 18px max(24px,env(safe-area-inset-bottom));overflow-x:hidden}
+/* aurore glacée + motif cristaux */
+.fond{position:fixed;inset:0;z-index:-2;background:radial-gradient(120% 80% at 50% 0,#0a1830 0,#02050b 60%)}
+.fond i{position:absolute;border-radius:50%;filter:blur(70px);opacity:.55;animation:flotte 18s ease-in-out infinite alternate}
+.fond i:nth-child(1){width:55vmax;height:55vmax;left:-15vmax;top:-10vmax;background:#1d6fff55}
+.fond i:nth-child(2){width:45vmax;height:45vmax;right:-12vmax;top:20vh;background:#18d6ff40;animation-delay:-6s}
+.fond i:nth-child(3){width:40vmax;height:40vmax;left:20vw;bottom:-18vmax;background:#7a5cff3a;animation-delay:-11s}
+.motif{position:fixed;inset:0;z-index:-1;opacity:.5;-webkit-mask:radial-gradient(ellipse at center,#000 30%,transparent 80%);mask:radial-gradient(ellipse at center,#000 30%,transparent 80%);
+background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='104'%3E%3Cg fill='none' stroke='%239fe3ff' stroke-opacity='.16' stroke-width='1'%3E%3Cpath d='M60 6 108 30v44L60 98 12 74V30z'/%3E%3Cpath d='M60 6v92M12 30l96 44M108 30 12 74'/%3E%3Ccircle cx='60' cy='52' r='9'/%3E%3C/g%3E%3C/svg%3E")}
+.cristal{position:fixed;z-index:-1;background:linear-gradient(135deg,#ffffff30,#9fe3ff10 60%,#ffffff22);border:1px solid #bfeaff30;backdrop-filter:blur(6px);box-shadow:inset 0 0 18px #bfeaff22;animation:flotte 9s ease-in-out infinite alternate}
+.c1{width:90px;height:150px;left:6vw;top:14vh;clip-path:polygon(50% 0,100% 40%,80% 100%,20% 100%,0 40%);transform:rotate(-14deg)}
+.c2{width:60px;height:110px;right:9vw;bottom:16vh;clip-path:polygon(50% 0,100% 35%,75% 100%,25% 100%,0 35%);transform:rotate(18deg);animation-delay:-4s}
+.c3{width:42px;height:76px;right:20vw;top:10vh;clip-path:polygon(50% 0,100% 40%,70% 100%,30% 100%,0 40%);transform:rotate(8deg);animation-delay:-2s}
+@keyframes flotte{to{transform:translate3d(0,-26px,0) rotate(var(--r,0deg)) scale(1.04)}}
+/* verre liquide */
+.verre{width:min(460px,100%);padding:34px 28px 28px;border-radius:34px;position:relative;
+background:linear-gradient(150deg,#ffffff1f,#ffffff08 45%,#9fe3ff10);
+border:1px solid #cfefff2e;backdrop-filter:blur(30px) saturate(170%);-webkit-backdrop-filter:blur(30px) saturate(170%);
+box-shadow:inset 0 1.5px 0 #ffffff55,inset 0 -1px 0 #9fe3ff22,0 40px 90px #000a,0 0 80px #3aa9ff14}
+.verre:before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;background:linear-gradient(115deg,transparent 30%,#ffffff1c 45%,transparent 60%);background-size:250% 100%;animation:reflet 7s linear infinite}
+@keyframes reflet{from{background-position:150% 0}to{background-position:-100% 0}}
+.badge{display:inline-flex;gap:8px;align-items:center;font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--ice);padding:6px 12px;border-radius:99px;background:#9fe3ff14;border:1px solid #9fe3ff2a}
+h1{margin:16px 0 6px;font-size:clamp(38px,11vw,52px);font-weight:800;letter-spacing:-.03em;line-height:1;background:linear-gradient(180deg,#fff,#a9defc 55%,#5fa8ff);-webkit-background-clip:text;background-clip:text;color:transparent;filter:drop-shadow(0 4px 24px #4cb7ff55)}
+.par{color:var(--mut);font-size:14px}.par b{color:var(--ice);font-weight:600}
+.sess{margin:24px 0 20px;padding:16px;border-radius:22px;background:#0006;border:1px solid #ffffff14}
+.slots{display:flex;gap:10px;margin-bottom:12px}
+.slot{flex:1;height:46px;border-radius:15px;display:grid;place-items:center;font-size:20px;border:1px solid #ffffff18;background:#ffffff08;transition:.4s}
+.slot.libre{border-color:#7ff0d055;background:linear-gradient(160deg,#7ff0d02a,#7ff0d008);box-shadow:0 0 22px #7ff0d02a,inset 0 1px 0 #ffffff40}
+.slot.pris{border-color:#ff8f9d44;background:linear-gradient(160deg,#ff8f9d22,#ff8f9d06);filter:saturate(.8)}
+.compte{display:flex;justify-content:space-between;font-size:14px;color:var(--mut)}.compte b{color:var(--txt)}
+label{display:block;font-size:13px;color:var(--mut);margin:14px 4px 7px}
+input{width:100%;padding:16px 18px;border-radius:18px;font:inherit;font-size:17px;color:var(--txt);background:#00000055;border:1px solid #ffffff1f;outline:0;transition:.25s}
+input::placeholder{color:#5d7488}
+input:focus{border-color:#9fe3ffaa;box-shadow:0 0 0 4px #9fe3ff1f,0 0 30px #4cb7ff22}
+button{width:100%;margin-top:22px;padding:17px;border:0;border-radius:20px;font:inherit;font-size:17px;font-weight:700;color:#04121f;cursor:pointer;background:linear-gradient(180deg,#e6f8ff,#8fd8ff 55%,#5aa8ff);box-shadow:inset 0 1.5px 0 #fff,0 12px 34px #3aa9ff55;transition:.2s}
+button:active{transform:scale(.98)}button:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
+.msg{margin-top:16px;padding:13px 16px;border-radius:16px;font-size:14px;display:none}
+.msg.err{display:block;background:#ff8f9d18;border:1px solid #ff8f9d44;color:#ffc2c9}
+.pleine{display:none;text-align:center;padding:18px;border-radius:20px;background:#ff8f9d14;border:1px solid #ff8f9d40;color:#ffc2c9}
+.pleine b{display:block;font-size:18px;color:#fff;margin-bottom:4px}
+.code{display:none;text-align:center}
+.code .big{margin:14px 0;padding:18px 8px;border-radius:22px;font:800 clamp(30px,9vw,40px)/1 ui-monospace,Menlo,monospace;letter-spacing:.14em;color:#fff;background:linear-gradient(160deg,#9fe3ff26,#ffffff08);border:1px solid #9fe3ff55;text-shadow:0 0 26px #4cb7ffaa}
+.code ol{text-align:left;color:var(--mut);font-size:14px;padding-left:20px;margin-top:10px}.code li{margin:4px 0}.code li b{color:var(--txt)}
+.ok{color:var(--ok)}
+@media(prefers-reduced-motion:reduce){*{animation:none!important}}
 
+/* ❄ neige */
+#neige{position:fixed;inset:0;z-index:-1;pointer-events:none}
+/* entrée + halo qui suit le doigt / la souris + bordure de givre animée */
+.verre{animation:entree 1.1s cubic-bezier(.2,.8,.2,1) both;transform:perspective(900px) rotateX(var(--rx,0deg)) rotateY(var(--ry,0deg));transition:transform .25s ease-out}
+@keyframes entree{from{opacity:0;transform:translateY(40px) scale(.96);filter:blur(12px)}}
+.verre .halo{position:absolute;inset:0;border-radius:inherit;pointer-events:none;background:radial-gradient(260px circle at var(--mx,50%) var(--my,0%),#9fe3ff2e,transparent 65%)}
+.verre:after{content:"";position:absolute;inset:-1px;border-radius:inherit;padding:1.5px;pointer-events:none;background:conic-gradient(from var(--a,0deg),#9fe3ff00,#9fe3ffcc,#ffffff00 30%,#6fb6ff99 55%,#9fe3ff00 80%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;animation:tourne 6s linear infinite}
+@property --a{syntax:"<angle>";inherits:false;initial-value:0deg}
+@keyframes tourne{to{--a:360deg}}
+.sess,.slot,button,input{position:relative}
+.verre>*{position:relative;z-index:1}
+/* titre glitch */
+h1 .gl{position:relative;display:inline-block}
+h1 .gl:before,h1 .gl:after{content:attr(data-t);position:absolute;left:0;top:0;width:100%;overflow:hidden;-webkit-text-fill-color:currentColor;background:none;filter:none;opacity:0}
+h1 .gl:before{color:#00e5ff;animation:glitch 5s infinite steps(1)}
+h1 .gl:after{color:#ff2b5e;animation:glitch 5s .12s infinite steps(1) reverse}
+@keyframes glitch{0%,90%,100%{opacity:0;transform:none}91%{opacity:.8;transform:translate(-4px,1px);clip-path:inset(10% 0 55% 0)}94%{opacity:.8;transform:translate(4px,-2px);clip-path:inset(60% 0 8% 0)}97%{opacity:.8;transform:translate(-2px,0);clip-path:inset(35% 0 35% 0)}}
+/* Niicedarker : style horreur */
+.horreur{position:relative;display:inline-block;margin:6px 0 2px;padding-bottom:10px;font:italic 800 1.55em/1 Georgia,"Times New Roman",serif;letter-spacing:.08em;color:#ff1f3a;-webkit-text-stroke:.6px #5a0010;text-shadow:0 0 6px #ff0022cc,0 0 20px #b3001c,0 2px 0 #3a000a;animation:vacille 5s infinite}
+.horreur:before,.horreur:after{content:attr(data-t);position:absolute;left:0;top:0;pointer-events:none;opacity:0;-webkit-text-stroke:0;text-shadow:none}
+.horreur:before{color:#fff;animation:tremble 5s infinite steps(1)}
+.horreur:after{color:#7a0012;animation:tremble 5s .1s infinite steps(1) reverse}
+.horreur i{position:absolute;top:82%;width:3px;height:6px;border-radius:0 0 3px 3px;background:linear-gradient(#e0102c,#7a0012);animation:goutte 3.4s infinite ease-in}
+.horreur i:nth-of-type(1){left:12%}.horreur i:nth-of-type(2){left:52%;animation-delay:-1.3s}.horreur i:nth-of-type(3){left:86%;animation-delay:-2.3s}
+@keyframes goutte{0%{height:0;transform:translateY(0);opacity:1}35%{height:9px}80%{transform:translateY(26px);height:12px;opacity:1}100%{transform:translateY(34px);height:5px;opacity:0}}
+@keyframes vacille{0%,100%{opacity:1}46%{opacity:1}47%{opacity:.35}48%{opacity:1}50%{opacity:.5}51%{opacity:1}}
+@keyframes tremble{0%,92%,100%{opacity:0;transform:none}93%{opacity:.6;transform:translate(-3px,1px)}96%{opacity:.6;transform:translate(3px,-1px)}}
+.par{line-height:1.9}
+/* boutons et cases plus vivants */
+button:before{content:"";position:absolute;inset:0;border-radius:inherit;background:linear-gradient(110deg,transparent 30%,#ffffffaa 50%,transparent 70%);background-size:250% 100%;background-position:150% 0;animation:balaye 3.5s infinite}
+@keyframes balaye{60%,100%{background-position:-100% 0}}
+.slot.libre{animation:pulse 2.6s ease-in-out infinite}.slot.libre:nth-child(2){animation-delay:.4s}.slot.libre:nth-child(3){animation-delay:.8s}
+@keyframes pulse{50%{box-shadow:0 0 34px #7ff0d055,inset 0 1px 0 #ffffff55;transform:translateY(-2px)}}
+.code .big{animation:pulse 2s ease-in-out infinite}
+.fond i:nth-child(1){animation-duration:14s}
+</style></head><body>
+<canvas id="neige"></canvas><div class="fond"><i></i><i></i><i></i></div><div class="motif"></div>
+<div class="cristal c1"></div><div class="cristal c2"></div><div class="cristal c3"></div>
+<main class="verre" id="carte"><div class="halo"></div>
+  <span class="badge">❄ Accès privé</span>
+  <h1><span class="gl" data-t="LEYBOTDY">LEYBOTDY</span></h1>
+  <p class="par">Créé par <span class="horreur" data-t="Niicedarker">Niicedarker<i></i><i></i><i></i></span><br>Connecte ton bot WhatsApp</p>
+
+  <section class="sess">
+    <div class="slots" id="slots"></div>
+    <div class="compte"><span><b id="nOcc">–</b> occupée(s)</span><span><b id="nLib">–</b> disponible(s)</span></div>
+  </section>
+
+  <section id="pleine" class="pleine"><b>Toutes les sessions sont pleines</b>Reviens un peu plus tard, une place se libérera.</section>
+
+  <section id="formulaire">
+    <label for="num">Ton numéro WhatsApp (avec l’indicatif)</label>
+    <input id="num" inputmode="numeric" autocomplete="tel" placeholder="ex : 2250700000000">
+    <label for="cod">Code de parrainage</label>
+    <input id="cod" autocapitalize="characters" autocomplete="off" placeholder="Ton code">
+    <button id="go">Connecter mon bot</button>
+    <div id="msg" class="msg"></div>
+  </section>
+
+  <section id="code" class="code">
+    <p id="codeTitre">Ton code de jumelage</p>
+    <div class="big" id="codeVal">· · · ·</div>
+    <ol>
+      <li>Ouvre <b>WhatsApp</b> › <b>Appareils connectés</b></li>
+      <li>Touche <b>Connecter un appareil</b></li>
+      <li>Choisis <b>Connecter avec le numéro de téléphone</b> et saisis ce code</li>
+    </ol>
+  </section>
+</main>
+<script>
+const $=id=>document.getElementById(id);let jeton=null,suivi=null;
+async function etat(){
+  try{
+    const e=await (await fetch('/api/etat')).json();
+    $('slots').innerHTML=Array.from({length:e.total},(_,i)=>`<div class="slot ${i<e.occupees?'pris':'libre'}">${i<e.occupees?'🔒':'❄️'}</div>`).join('');
+    $('nOcc').textContent=e.occupees;$('nLib').textContent=e.disponibles;
+    if(!jeton){$('pleine').style.display=e.pleine?'block':'none';$('formulaire').style.display=e.pleine?'none':'block'}
+  }catch(_){}
+}
+function erreur(t){const m=$('msg');m.className='msg err';m.textContent=t}
+$('go').onclick=async()=>{
+  $('msg').className='msg';$('go').disabled=true;
+  try{
+    const r=await fetch('/api/connecter',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({numero:$('num').value,code:$('cod').value})});
+    const d=await r.json();
+    if(!r.ok){erreur(d.erreur==='pleines'?'Les sessions viennent d’être remplies. Reviens plus tard.':d.erreur);etat();$('go').disabled=false;return}
+    jeton=d.jeton;$('formulaire').style.display='none';$('code').style.display='block';
+    suivre();suivi=setInterval(suivre,3000);
+  }catch(_){erreur('Connexion impossible. Réessaie.');$('go').disabled=false}
+};
+async function suivre(){
+  try{
+    const r=await fetch('/api/statut?jeton='+jeton);const d=await r.json();
+    if(d.statut==='connecte'){clearInterval(suivi);$('codeTitre').innerHTML='<span class="ok">✔ Ton bot est connecté !</span>';$('codeVal').textContent='✦';document.querySelector('#code ol').style.display='none';etat()}
+    else if(!r.ok){clearInterval(suivi);jeton=null;$('code').style.display='none';$('formulaire').style.display='block';$('go').disabled=false;erreur('Le code a expiré. Recommence.');etat()}
+    else if(d.codeJumelage){$('codeVal').textContent=d.codeJumelage;$('codeTitre').textContent='Saisis ce code dans WhatsApp'}
+    else $('codeTitre').textContent='Préparation de ton code…';
+  }catch(_){}
+}
+etat();setInterval(etat,8000);
+/* ❄ neige + halo + inclinaison 3D */
+(()=>{
+  const c=$('neige'),x=c.getContext('2d');let w,h,f=[];
+  const taille=()=>{w=c.width=innerWidth;h=c.height=innerHeight;f=Array.from({length:Math.min(90,w/9|0)},()=>({x:Math.random()*w,y:Math.random()*h,r:Math.random()*2.2+.6,v:Math.random()*.7+.25,d:Math.random()*6.28}))};
+  addEventListener('resize',taille);taille();
+  if(!matchMedia('(prefers-reduced-motion:reduce)').matches)(function b(){
+    x.clearRect(0,0,w,h);
+    for(const p of f){p.y+=p.v;p.d+=.01;p.x+=Math.sin(p.d)*.4;if(p.y>h+5){p.y=-5;p.x=Math.random()*w}
+      x.beginPath();x.arc(p.x,p.y,p.r,0,6.28);x.fillStyle='rgba(200,236,255,'+(.25+p.r/4)+')';x.fill()}
+    requestAnimationFrame(b)})();
+  const k=$('carte');
+  addEventListener('pointermove',e=>{
+    const r=k.getBoundingClientRect(),px=(e.clientX-r.left)/r.width,py=(e.clientY-r.top)/r.height;
+    k.style.setProperty('--mx',px*100+'%');k.style.setProperty('--my',py*100+'%');
+    if(e.pointerType==='mouse'){k.style.setProperty('--ry',((px-.5)*8)+'deg');k.style.setProperty('--rx',((.5-py)*8)+'deg')}
+  });
+  addEventListener('pointerleave',()=>{k.style.setProperty('--rx','0deg');k.style.setProperty('--ry','0deg')});
+})();
+</script></body></html>
