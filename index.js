@@ -1,3 +1,7 @@
+// 🧊 Lancé tout seul (node index.js) : on démarre le gestionnaire multi-comptes (page web + un bot par ami).
+// Lancé par le gestionnaire (BOT_WORKER=1) : on exécute le bot normalement. SINGLE_MODE=1 = ancien mode, un seul compte.
+if (!process.env.BOT_WORKER && !process.env.SINGLE_MODE) { require('./manager'); return; }
+
 // ⚡ FIX CRYPTO POUR RENDER & BAILEYS
 const crypto = require('crypto');
 if (!globalThis.crypto) globalThis.crypto = crypto;
@@ -49,8 +53,7 @@ const messageCache = {};
 const utilisateursMutes = new Set();
 // 🔒 Mode privé : personnes déjà prévenues (le bot ne le dit qu'une fois) + compteur de commandes pour .fiche
 const refusPriveDeja = new Set();
-// Accès admin temporaire accordé aux personnes qui ont demandé l'accès dans un groupe puis envoyé 2010 en privé.
-const demandesAccesPrive = new Set();
+// Personnes (JID + numéro réel) qui ont donné le mot de passe pendant le mode privé
 const utilisateursAutorisesMotDePasse = new Set();
 const statsCommandes = {};
 
@@ -73,6 +76,11 @@ const UA = 'TitanBot/1.0 (bot WhatsApp personnel)';
 
 // 🎤 Commandes de présentation : .présentation 1 … .présentation 6 (envoie media/presentation1.mp3 … presentation6.mp3 en vocal)
 const REGEX_PRESENTATION = /^\.pr[ée]sentation\s*([1-6])$/i;
+// 🎙️ Commandes qui répondent par un vocal : le bot affiche « enregistre un audio… » au lieu de « écrit… »
+const estCommandeVocale = (t) => {
+  const x = (t || '').trim().toLowerCase();
+  return /^\.(rire|sad|melodie)$/.test(x) || REGEX_PRESENTATION.test(x) || /^\.voc(-f)?(\s|$)/.test(x);
+};
 
 // 📝 ═══════════════════════════════════════════════════════════
 // JOURNAL DES MESSAGES : qui écrit, où (contact ou groupe), quel type, quel contenu
@@ -198,8 +206,18 @@ async function journaliserMessage(sock, msg, { muet = false } = {}) {
   }
 }
 
-// ⏱️ Délai entre deux phrases de drague (modifiable avec la variable Render DRAGUE_DELAI_MS)
-const DELAI_DRAGUE_MS = Math.max(1000, parseInt(process.env.DRAGUE_DELAI_MS, 10) || 1000);
+// ⏱️ Intervalle aléatoire entre deux messages de .drague et .cute (en ms)
+// Modifiable avec les variables Render INTERVALLE_MIN_MS et INTERVALLE_MAX_MS
+const INTERVALLE_MIN_MS = Math.max(1000, parseInt(process.env.INTERVALLE_MIN_MS, 10) || 3000);
+const INTERVALLE_MAX_MS = Math.max(INTERVALLE_MIN_MS, parseInt(process.env.INTERVALLE_MAX_MS, 10) || 6000);
+const intervalleEntreMessages = () => entierAlea(INTERVALLE_MIN_MS, INTERVALLE_MAX_MS);
+
+// 🔑 Mot de passe secret du mode privé : à définir dans Render (variable BOT_MOT_DE_PASSE).
+// Le bot ne le dit jamais. Quelqu'un qui l'envoie EN PRIVÉ pendant « .private on » a accès à toutes les commandes.
+const MOT_DE_PASSE_PRIVE = (process.env.BOT_MOT_DE_PASSE || '2010').trim();
+// 😴 En mode privé, le bot laisse passer un moment avant de dire qu'il est occupé (en ms)
+const REFUS_PRIVE_DELAI_MIN_MS = Math.max(0, parseInt(process.env.REFUS_PRIVE_DELAI_MIN_MS, 10) || 15000);
+const REFUS_PRIVE_DELAI_MAX_MS = Math.max(REFUS_PRIVE_DELAI_MIN_MS, parseInt(process.env.REFUS_PRIVE_DELAI_MAX_MS, 10) || 40000);
 // 🚦 Anti-spam : une commande par utilisateur toutes les 2,5 secondes
 const COOLDOWN_COMMANDE_MS = 2500;
 const dernieresCommandes = new Map();
@@ -255,7 +273,7 @@ process.on('unhandledRejection', (reason) => console.error('⚠️ Promesse reje
 app.get("/", (req, res) => res.send("⚡ *ATOMIC*"));
 app.get("/health", (req, res) => res.status(200).send("OK"));
 
-app.listen(PORT, () => console.log(`🌐 Serveur actif sur le port ${PORT}`));
+if (!process.env.BOT_WORKER) app.listen(PORT, () => console.log(`🌐 Serveur actif sur le port ${PORT}`));
 
 // Aucun auto-ping vers soi-même : une requête sortante ne garantit pas
 // que Render reçoit du trafic entrant. Utiliser un moniteur externe si nécessaire.
@@ -327,19 +345,27 @@ async function passerEnLigne(sock) {
 // ✍️ COMPOSING CONTINU : "en train d'écrire…" affiché tant que la réponse n'est pas partie
 // (relancé toutes les 4 s car WhatsApp l'éteint tout seul ; coupe-circuit de sécurité à 180 s)
 const composingActifs = new Map();
-function demarrerComposing(sock, jid) {
+// etat = 'composing' (écrit…) ou 'recording' (enregistre un audio…) ; le dernier appel décide de l'état affiché
+function demarrerComposing(sock, jid, etat = 'composing') {
   const existant = composingActifs.get(jid);
   if (existant) {
     clearTimeout(existant.securite);
     existant.securite = setTimeout(() => arreterComposing(sock, jid), 180000);
+    if (existant.etat !== etat) {
+      existant.etat = etat;
+      sock.sendPresenceUpdate(etat, jid).catch(() => {});
+    }
     return;
   }
-  const envoyer = async () => { try { await sock.sendPresenceUpdate('composing', jid); } catch (e) {} };
+  const c = { etat };
+  const envoyer = async () => { try { await sock.sendPresenceUpdate(c.etat, jid); } catch (e) {} };
   envoyer();
-  const intervalle = setInterval(envoyer, 4000);
-  const securite = setTimeout(() => arreterComposing(sock, jid), 180000);
-  composingActifs.set(jid, { intervalle, securite });
+  c.intervalle = setInterval(envoyer, 4000);
+  c.securite = setTimeout(() => arreterComposing(sock, jid), 180000);
+  composingActifs.set(jid, c);
 }
+// Un vocal (audio) → « enregistre un audio… » ; tout le reste → « écrit… »
+const etatPresencePour = (content) => (content && typeof content === 'object' && content.audio) ? 'recording' : 'composing';
 function arreterComposing(sock, jid) {
   const c = composingActifs.get(jid);
   if (!c) return;
@@ -355,7 +381,7 @@ async function envoyerUnPas(sock, remoteJid, content, options = {}, typeAction =
   const delaiMs = calculerDelaiEnvoi(texte, typeAction);
 
   await passerEnLigne(sock);
-  demarrerComposing(sock, remoteJid);
+  demarrerComposing(sock, remoteJid, etatPresencePour(content));
 
   // Un humain lit d'abord le message avant de répondre
   if (options.quoted && options.quoted.key) {
@@ -375,9 +401,9 @@ async function envoyerUnPas(sock, remoteJid, content, options = {}, typeAction =
 
 // ✍️ Suivi des envois : "en train d'écrire…" reste affiché tant qu'il reste un message à envoyer
 const envoisEnAttente = new Map();   // jid -> nombre d'envois en cours ou en file
-function commencerEnvoi(sock, jid) {
+function commencerEnvoi(sock, jid, etat = 'composing') {
   envoisEnAttente.set(jid, (envoisEnAttente.get(jid) || 0) + 1);
-  demarrerComposing(sock, jid);
+  demarrerComposing(sock, jid, etat);
 }
 function finirEnvoi(sock, jid) {
   const restant = (envoisEnAttente.get(jid) || 1) - 1;
@@ -391,7 +417,7 @@ function finirEnvoi(sock, jid) {
 
 async function envoyerAvecDelai(sock, remoteJid, content, options = {}, typeAction = 'texte') {
   options = sansCitationSupprimee(options);
-  commencerEnvoi(sock, remoteJid);
+  commencerEnvoi(sock, remoteJid, etatPresencePour(content));
   return enFile(remoteJid, async () => {
     try {
       return await envoyerUnPas(sock, remoteJid, content, options, typeAction);
@@ -401,6 +427,28 @@ async function envoyerAvecDelai(sock, remoteJid, content, options = {}, typeActi
       finirEnvoi(sock, remoteJid);
     }
   });
+}
+
+// 😴 Mode privé : le bot ne répond pas « occupé » tout de suite, il laisse passer un moment (15 à 40 s par défaut)
+function programmerRefusPrive(sock, remoteJid, msg, texte) {
+  const delai = entierAlea(REFUS_PRIVE_DELAI_MIN_MS, REFUS_PRIVE_DELAI_MAX_MS);
+  setTimeout(async () => {
+    try {
+      if (!data.botPrivateMode) return;   // le mode privé a été coupé entre-temps
+      await envoyerAvecDelai(sock, remoteJid, { text: texte }, { quoted: msg }, 'texte');
+    } catch (e) {
+      console.error('[PRIVÉ] ⚠️ Message « occupé » non envoyé :', e && e.message ? e.message : e);
+    }
+  }, delai);
+}
+
+// 🔑 Identités d'une personne (JID + numéro réel) : le mot de passe envoyé en privé doit aussi valoir dans les groupes
+async function identitesAcces(sock, msg, senderJid, isGroup) {
+  const ids = new Set([senderJid]);
+  const alt = isGroup ? msg.key.participantAlt : msg.key.remoteJidAlt;
+  if (alt) ids.add(alt);
+  try { const reel = await numeroReel(sock, senderJid, alt); if (reel) ids.add(reel); } catch (e) {}
+  return [...ids];
 }
 
 // 👁️ ═══════════════════════════════════════════════════════════
@@ -842,7 +890,7 @@ async function commandeVoc(sock, msg, remoteJid, cleanText) {
   if (vocOccupe) return repondre('⏳ Je prépare déjà un vocal, réessaie dans un instant.');
 
   vocOccupe = true;
-  commencerEnvoi(sock, remoteJid);
+  commencerEnvoi(sock, remoteJid, 'recording');
   try {
     await preparerBinaires();
     if (!bin.ffmpeg) throw new Error('FFMPEG_ABSENT');
@@ -932,7 +980,7 @@ async function commandeVocF(sock, msg, remoteJid, cleanText) {
     return;
   }
 
-  commencerEnvoi(sock, remoteJid);
+  commencerEnvoi(sock, remoteJid, 'recording');
   try {
     await preparerBinaires();
     if (!bin.ffmpeg) throw new Error('FFMPEG_ABSENT');
@@ -1031,10 +1079,10 @@ async function commandeCute(sock, msg, remoteJid, cleanText) {
       try { await sock.readMessages([msg.key]); } catch (e) {}
       for (let i = 0; i < compliments.length; i++) {
         await sock.sendPresenceUpdate('composing', remoteJid);
-        await sleep(300);
+        // 1er compliment presque tout de suite, puis un intervalle aléatoire (« écrit… » reste affiché pendant l'attente)
+        await sleep(i === 0 ? 300 : intervalleEntreMessages());
         await sock.sendMessage(remoteJid, { text: compliments[i] });
         try { await sock.sendPresenceUpdate('paused', remoteJid); } catch (e) {}
-        if (i < compliments.length - 1) await sleep(1000);
       }
     } catch (err) {
       console.error('⚠️ Erreur cute :', err);
@@ -1135,7 +1183,7 @@ const CATEGORIES_MENU = [
       { groupe: '📸 Médias', noms: ['.imagine', '.gen'], aff: '.imagine', args: '[description]', desc: "Image créée par l'IA" },
       { groupe: '📸 Médias', noms: ['.voc'], args: '[texte]', desc: "Je dis ton texte en vocal (voix d'homme grave)" },
       { groupe: '📸 Médias', noms: ['.voc-f'], args: '[texte]', desc: "Je dis ton texte en vocal (voix de femme)" },
-      { groupe: '🌐 Utilitaires', noms: ['.translate', '.trad'], args: '[lang] [texte]', desc: 'Traduire un texte' },
+      { groupe: '🌐 Utilitaires', noms: ['.translate', '.trad', '.traduire'], args: '[langue] [texte]', desc: 'Traduire un texte' },
       { groupe: '🌐 Utilitaires', noms: ['.dico', '.def', '.dictionnaire'], aff: '.dico', args: '[mot]', desc: 'Dictionnaire en ligne' },
       { groupe: '🌐 Utilitaires', noms: ['ret'], args: '[phrase] (nombre)', desc: 'Répéter une phrase', test: t => t.startsWith('ret ') },
       { groupe: '🎭 Fun & Social', noms: ['.8ball'], args: '[question]', desc: 'Boule de cristal' },
@@ -1764,13 +1812,12 @@ async function commandeDrague(sock, msg, remoteJid, senderJid, cleanText) {
       try { await sock.readMessages([msg.key]); } catch (e) {}
       for (let i = 0; i < phrases.length; i++) {
         await sock.sendPresenceUpdate('composing', remoteJid);
-        await sleep(250);
+        // 1re phrase presque tout de suite, puis un intervalle aléatoire (« écrit… » reste affiché pendant l'attente)
+        await sleep(i === 0 ? 250 : intervalleEntreMessages());
         const options = i === 0 ? sansCitationSupprimee({ quoted: msg }) : {};
         const envoye = await sock.sendMessage(remoteJid, { text: phrases[i], mentions: [cibleJid] }, options);
         if (envoye?.key?.id) processedMessages.add(envoye.key.id);
         try { await sock.sendPresenceUpdate('paused', remoteJid); } catch (e) {}
-        // ⚡ Mode rapide : environ 1 seconde entre deux messages
-        if (i < phrases.length - 1) await sleep(Math.max(1000, DELAI_DRAGUE_MS));
       }
     } catch (err) {
       console.error('⚠️ Erreur drague :', err);
@@ -1834,7 +1881,7 @@ async function commandeDico(sock, msg, remoteJid, cleanText) {
     const cite = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
     mot = (cite?.conversation || cite?.extendedTextMessage?.text || '').trim();
   }
-  mot = mot.split(/\s+/)[0] || '';
+  mot = (mot.split(/\s+/)[0] || '').replace(/^[^\p{L}]+|[^\p{L}]+$/gu, '');   // enlève guillemets, ponctuation, « ? »…
   if (!mot) return rep("📖 Donne-moi un mot !\nExemple : *.dico courage*");
   if (mot.length > 40) return rep("⚠️ Ce mot est trop long, essaie un seul mot à la fois.");
 
@@ -1847,15 +1894,124 @@ async function commandeDico(sock, msg, remoteJid, cleanText) {
     }
     if (res) break;
   }
+  // Introuvable : on propose le mot le plus proche du Wiktionnaire (ex. « courag » → « courage »)
+  let note = '';
+  if (!res) {
+    let suggestion = null;
+    try { suggestion = await suggestionWiktionnaire(mot); } catch (e) { suggestion = null; }
+    if (suggestion) {
+      try { res = await definitionWiktionnaire(suggestion); } catch (e) { res = null; }
+      if (res) note = `🔎 Rien pour « ${mot} », voici « ${suggestion} » :`;
+    }
+  }
   if (!res) return rep(`😕 Je ne trouve pas la définition de « ${mot} ».\nVérifie l'orthographe, ou essaie le mot au singulier / à l'infinitif.`);
 
-  const lignes = [`📖 *${res.mot.toUpperCase()}*${res.phon ? `  _${res.phon}_` : ''}`, '━━━━━━━━━━━━━━━'];
+  const lignes = [...(note ? [note, ''] : []), `📖 *${res.mot.toUpperCase()}*${res.phon ? `  _${res.phon}_` : ''}`, '━━━━━━━━━━━━━━━'];
   res.sens.slice(0, 4).forEach((s, i) => {
     lignes.push(`*${i + 1}.* ${s.nature ? `_(${s.nature})_ ` : ''}${couper(s.def, 260)}`);
     if (s.ex) lignes.push(`   ↳ _« ${couper(s.ex, 160)} »_`);
   });
   lignes.push('━━━━━━━━━━━━━━━', `🌐 Source : ${res.source}`);
   return rep(lignes.join('\n'));
+}
+
+async function suggestionWiktionnaire(mot) {
+  const r = await axios.get('https://fr.wiktionary.org/w/api.php', {
+    params: { action: 'opensearch', search: mot, limit: 5, namespace: 0, format: 'json' },
+    timeout: 10000, headers: { 'User-Agent': UA }
+  });
+  const titres = Array.isArray(r.data && r.data[1]) ? r.data[1] : [];
+  return titres.find(t => t.toLowerCase() !== mot.toLowerCase() && !/\s/.test(t)) || null;
+}
+
+// ═══════════════════════════════════════════════════════════
+// 🌐 TRADUCTION : .translate [langue] [texte]  (ou en répondant à un message)
+// Langue = code (en, es, ar…) ou nom (anglais, espagnol…). Sans langue : vers le français,
+// ou vers l'anglais si le texte est déjà en français. Google d'abord, MyMemory en secours.
+// ═══════════════════════════════════════════════════════════
+const LANGUES_TRAD = {
+  fr: 'français', en: 'anglais', es: 'espagnol', ar: 'arabe', de: 'allemand', it: 'italien', pt: 'portugais',
+  ru: 'russe', 'zh-CN': 'chinois', ja: 'japonais', ko: 'coréen', tr: 'turc', nl: 'néerlandais', hi: 'hindi',
+  sw: 'swahili', pl: 'polonais', ro: 'roumain', el: 'grec', he: 'hébreu', vi: 'vietnamien', th: 'thaï',
+  id: 'indonésien', uk: 'ukrainien', sv: 'suédois', da: 'danois', no: 'norvégien', fi: 'finnois', cs: 'tchèque',
+  hu: 'hongrois', fa: 'persan', bn: 'bengali', ur: 'ourdou', ca: 'catalan', la: 'latin', ht: 'créole haïtien',
+  mg: 'malgache', ln: 'lingala', yo: 'yoruba', ig: 'igbo', ha: 'haoussa', zu: 'zoulou', so: 'somali', am: 'amharique'
+};
+const LANGUE_PAR_CLE = (() => {
+  const t = { zh: 'zh-CN', chinois: 'zh-CN' };
+  for (const [code, nom] of Object.entries(LANGUES_TRAD)) { t[code.toLowerCase()] = code; t[normaliserTexte(nom)] = code; }
+  return t;
+})();
+const nomLangue = (c) => LANGUES_TRAD[c] || c;
+function lireLangue(mot) {
+  const k = normaliserTexte(mot).replace(/[^a-z-]/g, '');
+  return (k && LANGUE_PAR_CLE[k]) || null;
+}
+
+async function traduireGoogle(texte, cible) {
+  const r = await axios.get('https://translate.googleapis.com/translate_a/single', {
+    params: { client: 'gtx', sl: 'auto', tl: cible, dt: 't', q: texte },
+    timeout: 12000, headers: { 'User-Agent': UA }
+  });
+  const morceaux = Array.isArray(r.data && r.data[0]) ? r.data[0].map(x => x && x[0]).filter(Boolean) : [];
+  const resultat = morceaux.join('').trim();
+  return resultat ? { texte: resultat, source: (r.data && r.data[2]) || null } : null;
+}
+
+async function traduireMyMemory(texte, cible) {
+  if (texte.length > 450) return null;   // limite du service gratuit
+  const r = await axios.get('https://api.mymemory.translated.net/get', {
+    params: { q: texte, langpair: `autodetect|${cible}` }, timeout: 12000
+  });
+  const t = nettoyerHtml(r.data && r.data.responseData && r.data.responseData.translatedText);
+  if (!t || /MYMEMORY WARNING|PLEASE SELECT TWO DISTINCT|INVALID/i.test(t)) return null;
+  return { texte: t, source: null };
+}
+
+async function traduireTexte(texte, cible) {
+  for (const service of [traduireGoogle, traduireMyMemory]) {
+    try {
+      const res = await service(texte, cible);
+      if (res) return res;
+    } catch (e) {
+      console.error(`[TRAD] ❌ ${service.name} : ${e && e.message ? e.message : e}`);
+    }
+  }
+  return null;
+}
+
+async function commandeTraduire(sock, msg, remoteJid, cleanText) {
+  const rep = (texte) => envoyerAvecDelai(sock, remoteJid, { text: texte }, { quoted: msg }, 'texte');
+  const args = cleanText.replace(/^\.(translate|trad|traduire)\s*/i, '').trim();
+
+  let cible = null;
+  let texte = args;
+  const premier = args.split(/\s+/)[0] || '';
+  const langue = lireLangue(premier);
+  if (langue) { cible = langue; texte = args.slice(premier.length).trim(); }
+
+  if (!texte) {
+    const cite = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+    texte = (cite?.conversation || cite?.extendedTextMessage?.text || cite?.imageMessage?.caption || cite?.videoMessage?.caption || '').trim();
+  }
+  if (!texte) {
+    return rep("⚠️ Rien à traduire !\nExemples :\n• *.translate en bonjour tout le monde*\n• *.translate anglais bonjour*\n• réponds à un message avec *.translate es*\n\n_Si ton texte commence par un mot qui ressemble à une langue (en, de, la…), mets la langue d'abord._");
+  }
+  if (texte.length > 1000) return rep(`⚠️ Texte trop long (${texte.length} caractères, maximum 1000).`);
+
+  const cibleExplicite = !!cible;
+  cible = cible || 'fr';
+  let res = await traduireTexte(texte, cible);
+  // Sans langue demandée et texte déjà en français : on traduit vers l'anglais
+  if (res && !cibleExplicite && res.source === 'fr') {
+    cible = 'en';
+    res = (await traduireTexte(texte, cible)) || res;
+  }
+  if (!res) {
+    return rep("😕 Je n'ai pas réussi à traduire ça. Vérifie la langue (en, es, ar, anglais, espagnol…) ou réessaie dans un instant.");
+  }
+  const trajet = `${res.source ? nomLangue(res.source) + ' → ' : ''}${nomLangue(cible)}`;
+  return rep(`🌐 *TRADUCTION* (${trajet})\n\n${res.texte}`);
 }
 
 // 🎈 ═══════════════════════════════════════════════════════════
@@ -2365,6 +2521,15 @@ async function startBot() {
       const isGroup = remoteJid.endsWith('@g.us');
       const senderJid = isGroup ? (msg.key.participant || remoteJid) : remoteJid;
 
+      // 🧹 Commande tapée depuis le compte du bot : supprimée IMMÉDIATEMENT, avant tout le reste
+      // (pas de await : on n'attend ni le journal, ni la liste des admins du groupe, ni la réponse de WhatsApp)
+      if (msg.key.fromMe) {
+        const texteBrut = (msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || msg.message.videoMessage?.caption || '').trim();
+        if (texteBrut && (/^\.[a-z0-9]/i.test(texteBrut) || estCommandeReconnue(texteBrut.toLowerCase()))) {
+          effacerMessage(sock, remoteJid, msg.key);
+        }
+      }
+
       if (utilisateursMutes.has(senderJid)) {
         await journaliserMessage(sock, msg, { muet: true });
         return;
@@ -2381,8 +2546,13 @@ async function startBot() {
 
       const botNumber = sock.user.id.split(':')[0] + '@s.whatsapp.net';
       const isFromBot = msg.key.fromMe || senderJid === botNumber;
-      // Un utilisateur autorisé par le code peut gérer le bot comme le propriétaire pendant cette session.
-      const aAccesAdmin = isFromBot || utilisateursAutorisesMotDePasse.has(senderJid);
+      // Une personne qui a donné le mot de passe a accès à toutes les commandes (.del compris) tant que le mode privé dure.
+      let aMotDePasse = false;
+      if (!isFromBot && utilisateursAutorisesMotDePasse.size) {
+        const ids = await identitesAcces(sock, msg, senderJid, isGroup);
+        aMotDePasse = ids.some(id => utilisateursAutorisesMotDePasse.has(id));
+      }
+      const aAccesAdmin = isFromBot || aMotDePasse;
 
       let isAdmin = false;
       if (isGroup) {
@@ -2402,11 +2572,6 @@ async function startBot() {
       if (!isFromBot && cleanText && /(?:qui es[- ]tu|qui est[- ]tu|comment te nommes[- ]tu|comment tu t'appelles|quel est ton nom|c'est quoi ton nom|ton nom c'est quoi)/i.test(normaliserTexte(cleanText))) {
         await envoyerFichierEnVocal(sock, msg, remoteJid, 'sound.mp3');
         return;
-      }
-
-      // 🧹 Commande lancée par le propriétaire : le message tapé est effacé tout de suite
-      if (isFromBot && msg.key.fromMe && (/^\.[a-z0-9]/i.test(cleanText) || estCommandeReconnue(lowerText))) {
-        await effacerMessage(sock, remoteJid, msg.key);
       }
 
       let storedContent = msg.message;
@@ -2443,8 +2608,8 @@ async function startBot() {
 
       // 🎭 Commande reconnue : réaction immédiate, puis "en train d'écrire…" jusqu'à l'arrivée de la réponse
       if (estCommandeReconnue(lowerText) && !(data.botPrivateMode && !aAccesAdmin)) {
-        await reagirCommande(sock, msg);
-        demarrerComposing(sock, remoteJid);
+        if (!msg.key.fromMe) await reagirCommande(sock, msg);   // inutile sur ta propre commande, déjà effacée
+        demarrerComposing(sock, remoteJid, estCommandeVocale(lowerText) ? 'recording' : 'composing');
         statsCommandes[senderJid] = (statsCommandes[senderJid] || 0) + 1;
       }
 
@@ -2457,10 +2622,12 @@ async function startBot() {
         if (lowerText === '.private on') {
           data.botPrivateMode = true;
           refusPriveDeja.clear();
+          utilisateursAutorisesMotDePasse.clear();
           await envoyerAvecDelai(sock, remoteJid, { text: "🔒 *Je suis passé en mode privé\nFaut pas me deranger*👄" }, { quoted: msg }, 'texte');
         } else {
           data.botPrivateMode = false;
           refusPriveDeja.clear();
+          utilisateursAutorisesMotDePasse.clear();
           await envoyerAvecDelai(sock, remoteJid, { text: "🔓 *Mode privé désactivé\nIls vont encore une fois abuser de moi 😭🤦🏼‍♀️*" }, { quoted: msg }, 'texte');
         }
         return;
@@ -2475,27 +2642,21 @@ async function startBot() {
       const commandeAutorisee = /^\.(dico|def|dictionnaire|gamble|gumball)(\s|$)/.test(lowerText)
         || lowerText.trim() === 'yasmine'
         || (gumballEnAttente.has(cleGumball(remoteJid, acteurCourant)) && /^\d{1,2}$/.test(cleanText.trim()));
-      // 🔑 Le code doit être envoyé en privé après que cette personne a demandé l'accès dans un groupe.
-      // Le code n'est jamais demandé/publié dans le groupe et n'en déverrouille pas l'accès pour les autres.
-      if (!isGroup && !isFromBot && cleanText.trim() === '2010' && demandesAccesPrive.has(senderJid)) {
-        demandesAccesPrive.delete(senderJid);
-        utilisateursAutorisesMotDePasse.add(senderJid);
+      // 🔑 Mot de passe secret : seulement en message privé, seulement pendant « .private on ».
+      // Le bot ne le révèle jamais et ne dit pas qu'il existe.
+      if (!isGroup && !isFromBot && data.botPrivateMode && !aMotDePasse && cleanText.trim() === MOT_DE_PASSE_PRIVE) {
+        for (const id of await identitesAcces(sock, msg, senderJid, false)) utilisateursAutorisesMotDePasse.add(id);
         refusPriveDeja.delete(senderJid);
-        await envoyerAvecDelai(sock, remoteJid, { text: "🔓 *Accès administrateur accordé.* Retourne dans le groupe : tes commandes sont maintenant autorisées pendant que le bot reste en ligne." }, {}, 'texte');
+        await envoyerAvecDelai(sock, remoteJid, { text: "🔓 *Accès accordé.* Tu peux utiliser toutes mes commandes tant que je suis en mode privé 😌" }, {}, 'texte');
         return;
       }
 
       if (data.botPrivateMode && !aAccesAdmin && !commandeAutorisee) {
-        if (isGroup) {
-          // On garde en attente l'identité exacte du membre du groupe; le code en privé ne donne accès qu'à lui.
-          demandesAccesPrive.add(senderJid);
-          if (!refusPriveDeja.has(senderJid)) {
-            refusPriveDeja.add(senderJid);
-            await envoyerAvecDelai(sock, remoteJid, { text: "🤖 Bot en mode privé 🔒\nPour demander l'accès, écris *2010* en message privé au compte du bot. Le code ne doit pas être envoyé dans ce groupe." }, { quoted: msg }, 'texte');
-          }
-        } else if (!refusPriveDeja.has(senderJid)) {
-          refusPriveDeja.add(senderJid);
-          await envoyerAvecDelai(sock, remoteJid, { text: "🤖 Bot en mode privé 🔒\nSi le bot t'a demandé l'accès dans un groupe, envoie *2010* ici en privé." }, { quoted: msg }, 'texte');
+        // En privé : tout message. En groupe : seulement les commandes (sinon il répondrait à toutes les discussions).
+        const concerne = !isGroup || estCommandeReconnue(lowerText) || /^\.[a-z0-9]/i.test(cleanText);
+        if (concerne && !refusPriveDeja.has(senderJid)) {
+          refusPriveDeja.add(senderJid);   // une seule fois par personne
+          programmerRefusPrive(sock, remoteJid, msg, "🔒 Je suis en mode privé pour le moment.\nFaut pas me déranger 👄");
         }
         return;
       }
@@ -2596,44 +2757,8 @@ async function startBot() {
         }
       }
 
-      if (lowerText.startsWith('.translate') || lowerText.startsWith('.trad')) {
-        let args = cleanText.replace(/^\.(translate|trad)\s*/i, '').trim();
-        let targetLang = "fr";
-        let textToTranslate = "";
-
-        const parts = args.split(' ');
-        if (parts[0] && parts[0].length <= 3) {
-          targetLang = parts[0].toLowerCase();
-          textToTranslate = parts.slice(1).join(' ').trim();
-        } else {
-          textToTranslate = args;
-        }
-
-        if (!textToTranslate && msg.message.extendedTextMessage?.contextInfo?.quotedMessage) {
-          const quotedMsg = msg.message.extendedTextMessage.contextInfo.quotedMessage;
-          textToTranslate = quotedMsg.conversation || quotedMsg.extendedTextMessage?.text || "";
-        }
-
-        if (!textToTranslate) {
-          await envoyerAvecDelai(sock, remoteJid, { text: "⚠️ Rien à traduire !\nExemple : *.translate en bonjour tout le monde*\n(ou réponds à un message avec *.translate en*)" }, { quoted: msg }, 'texte');
-          return;
-        }
-
-        let traduction = null;
-        try {
-          const response = await axios.get('https://api.mymemory.translated.net/get', {
-            params: { q: textToTranslate, langpair: `autodetect|${targetLang}` }, timeout: 12000
-          });
-          traduction = response.data?.responseData?.translatedText;
-        } catch (e) {
-          console.error(`[TRAD] ❌ ${e && e.message ? e.message : e}`);
-        }
-
-        if (traduction) {
-          await envoyerAvecDelai(sock, remoteJid, { text: `🌐 *TRADUCTION* (${targetLang}) : ${traduction}` }, { quoted: msg }, 'texte');
-        } else {
-          await envoyerAvecDelai(sock, remoteJid, { text: "😕 Je n'ai pas réussi à traduire ça. Vérifie le code de langue (en, fr, es, ar...) ou réessaie dans un instant." }, { quoted: msg }, 'texte');
-        }
+      if (/^\.(translate|trad|traduire)(\s|$)/.test(lowerText)) {
+        await commandeTraduire(sock, msg, remoteJid, cleanText);
         return;
       }
 
