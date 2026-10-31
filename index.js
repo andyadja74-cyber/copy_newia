@@ -71,6 +71,9 @@ const melanger = (tab) => {
 const nomAffiche = (jid) => profilsJoueurs[jid] || `@${jid.split('@')[0]}`;
 const UA = 'TitanBot/1.0 (bot WhatsApp personnel)';
 
+// 🎤 Commandes de présentation : .présentation 1 … .présentation 6 (envoie media/presentation1.mp3 … presentation6.mp3 en vocal)
+const REGEX_PRESENTATION = /^\.pr[ée]sentation\s*([1-6])$/i;
+
 // 📝 ═══════════════════════════════════════════════════════════
 // JOURNAL DES MESSAGES : qui écrit, où (contact ou groupe), quel type, quel contenu
 // Désactivable avec la variable d'environnement LOG_MESSAGES=off
@@ -211,15 +214,27 @@ const MENU_IMAGES = (() => {
   }
 })();
 
-// 🎬 Vidéo du menu (optionnelle) : fichier media/menu.mp4 dans le projet
-const MENU_VIDEO = (() => {
-  try {
-    const chemin = path.join(__dirname, 'media', 'menu.mp4');
-    return fs.existsSync(chemin) ? fs.readFileSync(chemin) : null;
-  } catch (e) {
-    return null;
+// 🎬 Vidéos du menu (optionnelles) : media/menu.mp4, media/menu2.mp4, media/menu3.mp4 … (jusqu'à menu10.mp4)
+// Le bot en choisit une au hasard à chaque menu d'accueil (jamais deux fois la même d'affilée).
+const MENU_VIDEOS = (() => {
+  const liste = [];
+  for (const nom of ['menu.mp4', ...Array.from({ length: 9 }, (_, i) => `menu${i + 2}.mp4`)]) {
+    try {
+      const chemin = path.join(__dirname, 'media', nom);
+      if (fs.existsSync(chemin)) liste.push(fs.readFileSync(chemin));
+    } catch (e) { /* fichier illisible : ignoré */ }
   }
+  return liste;
 })();
+let dernierIndexVideoMenu = -1;
+function choisirVideoMenu() {
+  if (!MENU_VIDEOS.length) return null;
+  let i;
+  do { i = Math.floor(Math.random() * MENU_VIDEOS.length); }
+  while (MENU_VIDEOS.length > 1 && i === dernierIndexVideoMenu);
+  dernierIndexVideoMenu = i;
+  return MENU_VIDEOS[i];
+}
 
 let dernierIndexImageMenu = -1;
 function choisirImageMenu(cat) {
@@ -1112,6 +1127,7 @@ const CATEGORIES_MENU = [
       { groupe: '📸 Médias', noms: ['.melodie'], exact: true, desc: 'Envoyer musique.mp3 sous forme de vocal' },
       { groupe: '📸 Médias', noms: ['.rire'], exact: true, desc: 'Envoyer rire.mp3 sous forme de vocal' },
       { groupe: '📸 Médias', noms: ['.sad'], exact: true, desc: 'Envoyer sad.mp3 sous forme de vocal' },
+      { groupe: '📸 Médias', noms: ['.presentation'], aff: '.présentation', args: '[1-6]', test: (t) => REGEX_PRESENTATION.test(t), desc: 'Envoyer la présentation n°1 à 6 en vocal' },
       { groupe: '📸 Médias', noms: ['.pp', '.p'], aff: '.pp', args: '[@mention]', desc: "Photo de profil (groupe & privé)" },
       { groupe: '📸 Médias', noms: ['pipi'], args: '[@mention]', desc: "Photo de profil (pipi, groupe & privé)" },
       { groupe: '📸 Médias', noms: ['.qr'], args: '[texte]', desc: 'Générer un QR code' },
@@ -1397,8 +1413,8 @@ async function envoyerMenu(sock, remoteJid, msg, resultat) {
   if (typeof resultat.cat === 'number') {
     const img = choisirImageMenu(resultat.cat);
     if (img) media = { type: 'image', buffer: img };
-  } else if (MENU_VIDEO) {
-    media = { type: 'video', buffer: MENU_VIDEO };
+  } else if (MENU_VIDEOS.length) {
+    media = { type: 'video', buffer: choisirVideoMenu() };
   } else if (MENU_IMAGES.length) {
     media = { type: 'image', buffer: alea(MENU_IMAGES) };
   }
@@ -2699,6 +2715,17 @@ async function startBot() {
         return;
       }
 
+      const matchPresentation = lowerText.trim().match(REGEX_PRESENTATION);
+      if (matchPresentation) {
+        const numPresentation = matchPresentation[1];
+        try { await envoyerFichierEnVocal(sock, msg, remoteJid, `presentation${numPresentation}.mp3`); }
+        catch (e) {
+          console.error(`[AUDIO] .presentation ${numPresentation} :`, e && e.message ? e.message : e);
+          await envoyerAvecDelai(sock, remoteJid, { text: `⚠️ Je n'ai pas réussi à préparer le vocal. Vérifie que FFmpeg est disponible sur Render et que \`media/presentation${numPresentation}.mp3\` est bien présent.` }, { quoted: msg }, 'texte');
+        }
+        return;
+      }
+
       if (lowerText.trim() === '.rire') {
         try { await envoyerFichierEnVocal(sock, msg, remoteJid, 'rire.mp3'); }
         catch (e) {
@@ -2845,5 +2872,37 @@ async function arreterProprement(signal) {
 }
 process.once('SIGTERM', () => arreterProprement('SIGTERM'));
 process.once('SIGINT', () => arreterProprement('SIGINT'));
+
+// 🧹 ═══════════════════════════════════════════════════════════
+// NETTOYAGE AUTOMATIQUE toutes les 7 minutes (économise la RAM du plan gratuit Render)
+// On vide seulement les caches temporaires, jamais les profils / sessions / mutes.
+// ═══════════════════════════════════════════════════════════
+const NETTOYAGE_MS = 7 * 60 * 1000;
+setInterval(() => {
+  try {
+    const avant = Math.round(process.memoryUsage().rss / 1048576);
+
+    if (processedMessages.size > 500) processedMessages.clear();
+    if (lidVersNumero.size > 2000) lidVersNumero.clear();
+    if (contactsConnus.size > 2000) contactsConnus.clear();
+    for (const [jid, g] of groupesConnus) if (g.expire < Date.now()) groupesConnus.delete(jid);
+
+    // Fichiers temporaires (vocaux convertis) de plus de 10 minutes
+    try {
+      for (const f of fs.readdirSync(TMP_DIR)) {
+        const chemin = path.join(TMP_DIR, f);
+        if (Date.now() - fs.statSync(chemin).mtimeMs > 10 * 60 * 1000) fs.unlinkSync(chemin);
+      }
+    } catch (e) { /* dossier absent : rien à faire */ }
+
+    // Ramasse-miettes forcé (seulement si Node est lancé avec --expose-gc)
+    if (typeof global.gc === 'function') global.gc();
+
+    const apres = Math.round(process.memoryUsage().rss / 1048576);
+    console.log(`[NETTOYAGE] RAM : ${avant} Mo → ${apres} Mo`);
+  } catch (e) {
+    console.error('[NETTOYAGE] ⚠️', e && e.message ? e.message : e);
+  }
+}, NETTOYAGE_MS);
 
 startBot().catch(e => console.error('❌ Échec du démarrage initial :', e?.message || e));
