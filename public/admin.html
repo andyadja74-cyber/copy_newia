@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark">
+<title>Admin · LEYBOTDY</title>
+<style>
+:root{--ice:#9fe3ff;--txt:#eaf6ff;--mut:#8aa5bb;--ok:#7ff0d0}
+*{box-sizing:border-box;margin:0}
+body{min-height:100vh;display:grid;place-items:center;padding:max(24px,env(safe-area-inset-top)) 16px max(24px,env(safe-area-inset-bottom));color:var(--txt);font:16px/1.5 -apple-system,"SF Pro Display","Segoe UI",system-ui,sans-serif;background:#02050b;overflow-x:hidden}
+.fond{position:fixed;inset:0;z-index:-2;background:radial-gradient(120% 80% at 50% 0,#0a1830,#02050b 62%)}
+.fond i{position:absolute;border-radius:50%;filter:blur(70px);opacity:.55;animation:fl 16s ease-in-out infinite alternate}
+.fond i:nth-child(1){width:50vmax;height:50vmax;left:-14vmax;top:-10vmax;background:#1d6fff55}
+.fond i:nth-child(2){width:42vmax;height:42vmax;right:-12vmax;bottom:-8vmax;background:#7a5cff40;animation-delay:-7s}
+@keyframes fl{to{transform:translate3d(0,-26px,0) scale(1.05)}}
+.motif{position:fixed;inset:0;z-index:-1;opacity:.5;-webkit-mask:radial-gradient(ellipse at center,#000 30%,transparent 80%);mask:radial-gradient(ellipse at center,#000 30%,transparent 80%);background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='104'%3E%3Cg fill='none' stroke='%239fe3ff' stroke-opacity='.15'%3E%3Cpath d='M60 6 108 30v44L60 98 12 74V30z'/%3E%3Cpath d='M60 6v92M12 30l96 44M108 30 12 74'/%3E%3Ccircle cx='60' cy='52' r='9'/%3E%3C/g%3E%3C/svg%3E")}
+.v{width:min(480px,100%);padding:28px 22px;border-radius:32px;position:relative;background:linear-gradient(150deg,#ffffff1f,#ffffff08 45%,#9fe3ff10);border:1px solid #cfefff2e;backdrop-filter:blur(30px) saturate(170%);-webkit-backdrop-filter:blur(30px) saturate(170%);box-shadow:inset 0 1.5px 0 #ffffff55,0 40px 90px #000a,0 0 80px #3aa9ff14;animation:entre 1s cubic-bezier(.2,.8,.2,1) both}
+@keyframes entre{from{opacity:0;transform:translateY(34px) scale(.97);filter:blur(10px)}}
+.v:after{content:"";position:absolute;inset:-1px;border-radius:inherit;padding:1.5px;pointer-events:none;background:conic-gradient(from var(--a,0deg),#9fe3ff00,#9fe3ffcc,#fff0 30%,#6fb6ff99 55%,#9fe3ff00 80%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;animation:tr 6s linear infinite}
+@property --a{syntax:"<angle>";inherits:false;initial-value:0deg}
+@keyframes tr{to{--a:360deg}}
+.haut{display:flex;justify-content:space-between;align-items:center}
+h1{font-size:30px;font-weight:800;letter-spacing:-.02em;background:linear-gradient(100deg,#5fa8ff,#fff 30%,#a9defc 55%,#fff 80%,#5fa8ff);background-size:220% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:br 7s linear infinite}
+@keyframes br{to{background-position:-220% 0}}
+.haut a{color:var(--ice);font-size:14px;text-decoration:none;padding:7px 13px;border-radius:99px;background:#9fe3ff12;border:1px solid #9fe3ff2a}
+.sous{color:var(--mut);font-size:14px;margin:6px 0 18px}
+.champ{position:relative}
+input,button{width:100%;padding:16px 18px;border-radius:18px;font:inherit;font-size:16px;border:1px solid #ffffff1f;outline:0}
+input{color:var(--txt);background:#00000055;transition:.25s;padding-right:56px}
+input:focus{border-color:#9fe3ffaa;box-shadow:0 0 0 4px #9fe3ff1f,0 0 30px #4cb7ff22}
+.oeil{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:44px;height:44px;padding:0;border:0;background:none;font-size:18px;cursor:pointer;opacity:.7}
+.go{margin-top:14px;border:0;font-weight:700;color:#04121f;cursor:pointer;background:linear-gradient(180deg,#e6f8ff,#8fd8ff 55%,#5aa8ff);box-shadow:inset 0 1.5px 0 #fff,0 12px 34px #3aa9ff55;transition:.2s}
+.go:hover{transform:translateY(-1px);filter:brightness(1.08)}.go:active{transform:scale(.98)}
+.err{margin-top:12px;color:#ffc2c9;font-size:14px;min-height:20px}
+#liste{display:none}
+.tuiles{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:6px}
+.t{padding:14px 8px;text-align:center;border-radius:20px;background:linear-gradient(160deg,#ffffff14,#ffffff05);border:1px solid #ffffff18;box-shadow:inset 0 1px 0 #ffffff30}
+.t b{display:block;font-size:30px;line-height:1.1;font-weight:800}.t span{font-size:12px;color:var(--mut);letter-spacing:.08em;text-transform:uppercase}
+.t.l b{color:var(--ok);text-shadow:0 0 20px #7ff0d066}.t.o b{color:#ffc2c9}
+.maj{display:flex;justify-content:space-between;align-items:center;margin:14px 2px 4px;font-size:12px;color:var(--mut)}
+.maj button{width:auto;padding:7px 14px;font-size:12px;color:var(--ice);background:#9fe3ff12;border-color:#9fe3ff2a;cursor:pointer}
+.ligne{display:flex;align-items:center;gap:12px;margin-top:10px;padding:12px 14px;border-radius:20px;background:#0005;border:1px solid #ffffff14;animation:monte .5s both cubic-bezier(.2,.8,.2,1);transition:.25s}
+.ligne:hover{border-color:#9fe3ff44;transform:translateY(-2px);box-shadow:0 10px 30px #3aa9ff1c}
+@keyframes monte{from{opacity:0;transform:translateY(12px)}}
+.av{flex:none;width:44px;height:44px;border-radius:50%;display:grid;place-items:center;font-weight:800;font-size:14px;color:#04121f;background:linear-gradient(135deg,#e6f8ff,#6fb6ff);box-shadow:0 0 18px #4cb7ff55}
+.inf{flex:1;min-width:0}.inf b{display:block;font-weight:600;word-break:break-all}
+.inf span{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ok)}
+.inf span i{width:7px;height:7px;border-radius:50%;background:currentColor;animation:ping 2s infinite}
+.inf span.at{color:#ffd27a}
+@keyframes ping{0%{box-shadow:0 0 0 0 currentColor}70%,100%{box-shadow:0 0 0 8px transparent}}
+.x{width:auto;padding:10px 14px;font-size:13px;font-weight:600;color:#ffc2c9;background:#ff8f9d18;border-color:#ff8f9d44;cursor:pointer;transition:.2s}
+.x:hover{background:#ff8f9d30;box-shadow:0 0 22px #ff8f9d33}
+.vide{margin-top:14px;padding:28px 10px;text-align:center;color:var(--mut);border-radius:20px;border:1px dashed #ffffff22}
+.vide em{display:block;font-style:normal;font-size:30px;margin-bottom:4px}
+.toast{position:fixed;left:50%;bottom:max(24px,env(safe-area-inset-bottom));transform:translate(-50%,40px);padding:12px 20px;border-radius:99px;font-size:14px;background:#0b1a2cdd;border:1px solid #9fe3ff44;backdrop-filter:blur(14px);opacity:0;transition:.4s;pointer-events:none}
+.toast.on{opacity:1;transform:translate(-50%,0)}
+@media(prefers-reduced-motion:reduce){*{animation:none!important}}
+</style></head><body>
+<div class="fond"><i></i><i></i></div><div class="motif"></div>
+<main class="v">
+  <div class="haut"><h1>🔐 Admin</h1><a href="/">← Page</a></div>
+  <p class="sous">Espace réservé au propriétaire · LEYBOTDY</p>
+  <section id="entree">
+    <div class="champ"><input id="mdp" type="password" placeholder="Mot de passe admin" autocomplete="current-password"><button class="oeil" id="oeil" type="button" aria-label="Afficher">👁</button></div>
+    <button class="go" id="ok">Entrer</button><div class="err" id="err"></div>
+  </section>
+  <section id="liste">
+    <div class="tuiles"><div class="t o"><b id="tO">0</b><span>Occupées</span></div><div class="t l"><b id="tL">0</b><span>Libres</span></div><div class="t"><b id="tT">0</b><span>Total</span></div></div>
+    <div class="maj"><span id="maj">Actualisation…</span><button id="rafr" type="button">↻ Actualiser</button></div>
+    <div id="lignes"></div><div class="err" id="err2"></div>
+  </section>
+</main><div class="toast" id="toast"></div>
+<script>
+const $=i=>document.getElementById(i);let cle='',tm=null,dern=0,pt=null;
+const nom={connecte:'Connecté',code:'En attente du code',demarrage:'Démarrage',reconnexion:'Reconnexion'};
+const toast=t=>{const e=$('toast');e.textContent=t;e.classList.add('on');clearTimeout(pt);pt=setTimeout(()=>e.classList.remove('on'),2600)};
+const compte=(id,v)=>{const e=$(id),a=+e.textContent,t0=performance.now();(function f(t){const k=Math.min(1,(t-t0)/500);e.textContent=Math.round(a+(v-a)*k);if(k<1)requestAnimationFrame(f)})(t0)};
+async function api(u,corps){const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json','x-admin-key':cle},body:JSON.stringify(corps||{})});return{r,d:await r.json()}}
+async function charger(){
+  try{
+    const{r,d}=await api('/api/admin/liste');
+    if(!r.ok){$('err').textContent=d.erreur;$('entree').style.display='block';$('liste').style.display='none';clearInterval(tm);return}
+    $('entree').style.display='none';$('liste').style.display='block';$('err2').textContent='';
+    compte('tO',d.occupees);compte('tL',d.disponibles);compte('tT',d.total);dern=Date.now();
+    $('lignes').innerHTML=d.sessions.length?d.sessions.map((s,i)=>`<div class="ligne" style="animation-delay:${i*.07}s"><div class="av">${s.numero.slice(-2)}</div><div class="inf"><b>+${s.numero}</b><span class="${s.statut==='connecte'?'':'at'}"><i></i>${nom[s.statut]||s.statut}</span></div><button class="x" data-n="${s.numero}">Déconnecter</button></div>`).join(''):'<div class="vide"><em>❄️</em>Aucun ami connecté</div>';
+  }catch(_){$('err2').textContent='Connexion impossible.'}
+}
+setInterval(()=>{if(dern)$('maj').textContent='Actualisé il y a '+Math.round((Date.now()-dern)/1000)+' s'},1000);
+$('ok').onclick=()=>{cle=$('mdp').value;$('err').textContent='';charger();clearInterval(tm);tm=setInterval(charger,8000)};
+$('mdp').onkeydown=e=>{if(e.key==='Enter')$('ok').click()};
+$('oeil').onclick=()=>{const m=$('mdp');m.type=m.type==='password'?'text':'password'};
+$('rafr').onclick=()=>{charger();toast('Liste actualisée')};
+$('lignes').onclick=async e=>{const n=e.target.dataset&&e.target.dataset.n;if(!n||!confirm('Déconnecter +'+n+' et libérer sa place ?'))return;
+  const{r,d}=await api('/api/admin/deconnecter',{numero:n});if(r.ok)toast('+'+n+' déconnecté · place libérée');else $('err2').textContent=d.erreur;charger()};
+</script></body></html>
