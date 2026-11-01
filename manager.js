@@ -103,6 +103,8 @@ const etat = (avecReservations = true) => {
 
 const app = express();
 app.use(express.json({ limit: '2kb' }));
+// 📱 Fichiers de l'appli (manifeste, icônes, service worker, page hors ligne)
+app.use(express.static(path.join(__dirname, 'public'), { index: false, setHeaders: (res, f) => { if (f.endsWith('sw.js')) res.setHeader('Cache-Control', 'no-cache'); } }));
 app.get('/health', (req, res) => res.send('OK'));
 app.get('/api/etat', (req, res) => res.json(etat()));
 
