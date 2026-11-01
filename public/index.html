@@ -123,6 +123,20 @@ h1{background:linear-gradient(100deg,#5fa8ff 0%,#fff 25%,#a9defc 50%,#fff 75%,#5
 .expire{font-size:13px;color:var(--mut);margin-top:6px}
 input:focus{transform:translateY(-1px)}button:hover:not(:disabled){filter:brightness(1.08);transform:translateY(-1px)}
 .garanties li{transition:.3s}.garanties li:hover{transform:translateY(-3px);border-color:#9fe3ff55;box-shadow:0 10px 30px #3aa9ff22,inset 0 1px 0 #ffffff40}
+
+/* ⏳ FILE D'ATTENTE */
+.attente{display:none;text-align:center}
+.orbe{position:relative;width:136px;height:136px;margin:8px auto 18px;border-radius:50%;display:grid;place-content:center;background:radial-gradient(circle at 35% 28%,#ffffff2e,#9fe3ff12 60%,#0000);border:1px solid #9fe3ff44;box-shadow:inset 0 2px 0 #ffffff55,0 0 54px #4cb7ff33;animation:respire 3.5s ease-in-out infinite alternate}
+.orbe:before{content:"";position:absolute;inset:-10px;border-radius:50%;background:conic-gradient(#9fe3ff00,#9fe3ffdd,#9fe3ff00 45%);-webkit-mask:radial-gradient(farthest-side,#0000 calc(100% - 3px),#000 calc(100% - 2px));mask:radial-gradient(farthest-side,#0000 calc(100% - 3px),#000 calc(100% - 2px));animation:orbite 3s linear infinite}
+.orbe span{font-size:58px;font-weight:800;line-height:1;background:linear-gradient(180deg,#fff,#8fd8ff);-webkit-background-clip:text;background-clip:text;color:transparent;filter:drop-shadow(0 4px 18px #4cb7ff88)}
+.orbe small{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--mut);margin-top:4px}
+@keyframes orbite{to{transform:rotate(360deg)}}@keyframes respire{to{transform:scale(1.05);box-shadow:inset 0 2px 0 #ffffff55,0 0 80px #4cb7ff55}}
+.attente .t1{font-size:20px;font-weight:700}
+.attente.tour .orbe{border-color:#7ff0d088;box-shadow:inset 0 2px 0 #ffffff55,0 0 70px #7ff0d055}
+.attente.tour .orbe:before{background:conic-gradient(#7ff0d000,#7ff0d0ee,#7ff0d000 45%)}
+#tourBtn{display:none}.attente.tour #tourBtn{display:block;animation:pulse 1.6s ease-in-out infinite}
+.quit{display:inline-block;margin-top:16px;font-size:13px;color:var(--mut);text-decoration:underline;text-underline-offset:3px;cursor:pointer}
+.quit:hover{color:var(--txt)}
 </style></head><body>
 <canvas id="neige"></canvas><div class="grain"></div><i class="etoile e1"></i><i class="etoile e2"></i><i class="etoile e3"></i><div class="fond"><i></i><i></i><i></i></div><div class="motif"></div>
 <div class="cristal c1"></div><div class="cristal c2"></div><div class="cristal c3"></div>
@@ -137,7 +151,7 @@ input:focus{transform:translateY(-1px)}button:hover:not(:disabled){filter:bright
     <div class="jauge"><i id="jf"></i></div><div class="compte"><span><b id="nOcc">–</b> occupée(s)</span><span><b id="nLib">–</b> disponible(s)</span></div>
   </section>
 
-  <section id="pleine" class="pleine"><b>Toutes les sessions sont pleines</b>Reviens un peu plus tard, une place se libérera.</section>
+  <section id="pleine" class="pleine"><b>Toutes les places sont prises</b>Rejoins la file d’attente : on te garde une place et on te prévient ici dès qu’elle se libère.</section>
 
   <section id="formulaire">
     <label for="num">Ton numéro WhatsApp (avec l’indicatif)</label>
@@ -160,6 +174,14 @@ input:focus{transform:translateY(-1px)}button:hover:not(:disabled){filter:bright
     </ol>
   </section>
 
+  <section id="attente" class="attente">
+    <div class="orbe"><span id="pos">–</span><small>ta place</small></div>
+    <p class="t1" id="attTitre">Tu es dans la file</p>
+    <p class="expire" id="attSous">Garde cette page ouverte ✨</p>
+    <button id="tourBtn" type="button">🚀 Connecter mon bot</button>
+    <a class="quit" id="quit">Quitter la file</a>
+  </section>
+
   <ul class="garanties">
     <li><em>🔒</em><span><b>Sécurisé</b>Accès sur invitation, aucun mot de passe demandé</span></li>
     <li><em>🛡️</em><span><b>Fiable</b>Reconnexion automatique, places limitées pour rester stable</span></li>
@@ -169,31 +191,31 @@ input:focus{transform:translateY(-1px)}button:hover:not(:disabled){filter:bright
 </main>
 <a class="admin" href="/admin">🔐 Admin</a>
 <script>
-const $=id=>document.getElementById(id);let jeton=null,suivi=null;
+const $=id=>document.getElementById(id);let jeton=null,suivi=null,mode='direct',jetonFile=null,suiviFile=null,saisie={};const libelle=()=>mode==='file'?'🔔 Rejoindre la file d’attente':'Connecter mon bot';
 async function etat(){
   try{
     const e=await (await fetch('/api/etat')).json();
     $('slots').innerHTML=Array.from({length:e.total},(_,i)=>`<div class="slot ${i<e.occupees?'pris':'libre'}">${i<e.occupees?'🔒':'❄️'}</div>`).join('');
     $('nOcc').textContent=e.occupees;$('jf').style.width=(e.occupees/e.total*100)+'%';$('jf').style.background=e.pleine?'linear-gradient(90deg,#ff8f9d,#ff5d73)':'';$('nLib').textContent=e.disponibles;
-    if(!jeton){$('pleine').style.display=e.pleine?'block':'none';$('formulaire').style.display=e.pleine?'none':'block'}
+    if(!jeton&&!jetonFile){$('pleine').style.display=e.pleine?'block':'none';$('formulaire').style.display='block';mode=e.pleine?'file':'direct';if(!$('go').disabled)$('go').textContent=libelle()}
   }catch(_){}
 }
 function erreur(t){const m=$('msg');m.className='msg err';m.textContent=t}
 $('go').onclick=async()=>{
   $('msg').className='msg';$('go').disabled=true;$('go').textContent='Connexion…';
   try{
-    const r=await fetch('/api/connecter',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({numero:$('num').value,code:$('cod').value})});
+    const r=await fetch(mode==='file'?'/api/file/rejoindre':'/api/connecter',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({numero:$('num').value,code:$('cod').value})});
     const d=await r.json();
-    if(!r.ok){erreur(d.erreur==='pleines'?'Les sessions viennent d’être remplies. Reviens plus tard.':d.erreur);etat();$('go').disabled=false;$('go').textContent='Connecter mon bot';return}
-    jeton=d.jeton;debut=Date.now();tic();tc=setInterval(tic,1000);$('formulaire').style.display='none';$('code').style.display='block';
+    if(!r.ok){erreur(d.erreur==='pleines'?'Les sessions viennent d’être remplies. Reviens plus tard.':d.erreur);etat();$('go').disabled=false;$('go').textContent=libelle();return}
+    if(mode==='file'){entrerFile(d.jeton);return}jeton=d.jeton;debut=Date.now();tic();tc=setInterval(tic,1000);$('formulaire').style.display='none';$('code').style.display='block';
     suivre();suivi=setInterval(suivre,3000);
-  }catch(_){erreur('Connexion impossible. Réessaie.');$('go').disabled=false;$('go').textContent='Connecter mon bot'}
+  }catch(_){erreur('Connexion impossible. Réessaie.');$('go').disabled=false;$('go').textContent=libelle()}
 };
 async function suivre(){
   try{
     const r=await fetch('/api/statut?jeton='+jeton);const d=await r.json();
     if(d.statut==='connecte'){clearInterval(suivi);$('copier').classList.remove('vu');clearInterval(tc);$('exp').textContent='';fete();$('codeTitre').innerHTML='<span class="ok">✔ Ton bot est connecté !</span>';$('codeVal').textContent='✦';document.querySelector('#code ol').style.display='none';etat()}
-    else if(!r.ok){clearInterval(suivi);clearInterval(tc);$('exp').textContent='';jeton=null;$('code').style.display='none';$('formulaire').style.display='block';$('go').disabled=false;$('go').textContent='Connecter mon bot';erreur('Le code a expiré. Recommence.');etat()}
+    else if(!r.ok){clearInterval(suivi);clearInterval(tc);$('exp').textContent='';jeton=null;$('code').style.display='none';$('formulaire').style.display='block';$('go').disabled=false;$('go').textContent=libelle();erreur('Le code a expiré. Recommence.');etat()}
     else if(d.codeJumelage){$('codeVal').textContent=d.codeJumelage;$('codeTitre').textContent='Saisis ce code dans WhatsApp';$('copier').classList.add('vu')}
     else $('codeTitre').textContent='Préparation de ton code…';
   }catch(_){}
@@ -202,6 +224,28 @@ $('copier').onclick=async()=>{const t=$('codeVal').textContent.replace(/[^A-Z0-9
   try{await navigator.clipboard.writeText(t)}catch(_){const a=document.createElement('textarea');a.value=t;document.body.appendChild(a);a.select();document.execCommand('copy');a.remove()}
   $('copier').textContent='✔ Copié';setTimeout(()=>$('copier').textContent='📋 Copier le code',2200)};
 let debut=0,tc=null;
+function entrerFile(j){jetonFile=j;saisie={numero:$('num').value,code:$('cod').value};
+  $('go').disabled=false;$('go').textContent=libelle();
+  $('formulaire').style.display='none';$('pleine').style.display='none';$('attente').style.display='block';
+  try{window.Notification&&Notification.permission==='default'&&Notification.requestPermission()}catch(_){}
+  suivreFile();suiviFile=setInterval(suivreFile,3000)}
+function sortirFile(){clearInterval(suiviFile);jetonFile=null;const a=$('attente');a.style.display='none';a.classList.remove('tour');$('formulaire').style.display='block';document.title='LEYBOTDY · Connecte ton bot';etat()}
+function alerte(){try{navigator.vibrate&&navigator.vibrate([200,100,200]);document.title='🎉 À toi ! · LEYBOTDY';
+  if(window.Notification&&Notification.permission==='granted')new Notification('LEYBOTDY',{body:'C’est ton tour ! Connecte ton bot.'})}catch(_){}}
+async function suivreFile(){try{
+  const r=await fetch('/api/file/statut?jeton='+jetonFile),d=await r.json(),a=$('attente');
+  if(!r.ok){sortirFile();erreur('Ton tour est passé ou tu as été retiré de la file. Réessaie.');return}
+  if(d.tonTour){
+    if(!a.classList.contains('tour')){a.classList.add('tour');$('pos').textContent='🎉';fete();alerte()}
+    $('attTitre').textContent='C’est ton tour !';$('attSous').textContent='Connecte-toi vite : '+(d.restant/60|0)+':'+String(d.restant%60).padStart(2,'0')
+  }else{
+    a.classList.remove('tour');$('pos').textContent=d.position;
+    $('attTitre').textContent=d.position===1?'Tu es le prochain !':(d.position-1)+' personne(s) devant toi';
+    $('attSous').textContent='Garde cette page ouverte ✨ on te prévient ici'
+  }}catch(_){}}
+$('quit').onclick=async()=>{try{await fetch('/api/file/quitter',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jeton:jetonFile})})}catch(_){}sortirFile()};
+$('tourBtn').onclick=()=>{clearInterval(suiviFile);jetonFile=null;const a=$('attente');a.style.display='none';a.classList.remove('tour');
+  $('formulaire').style.display='block';mode='direct';$('num').value=saisie.numero;$('cod').value=saisie.code;document.title='LEYBOTDY · Connecte ton bot';$('go').onclick()};
 function tic(){const r=Math.max(0,240-((Date.now()-debut)/1000|0));$('exp').textContent=r?'Expire dans '+(r/60|0)+':'+String(r%60).padStart(2,'0'):'Code expiré — recommence'}
 function fete(){const c=document.createElement('canvas');c.style.cssText='position:fixed;inset:0;pointer-events:none;z-index:5';document.body.appendChild(c);
   const x=c.getContext('2d'),w=c.width=innerWidth,h=c.height=innerHeight,cl=['#9fe3ff','#fff','#7ff0d0','#6fb6ff'];
