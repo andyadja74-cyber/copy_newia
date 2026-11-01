@@ -22,6 +22,18 @@ const sauver = () => {
   try { fs.writeFileSync(REGISTRE, JSON.stringify(registre)); } catch (e) {}
 };
 
+// ⏳ FILE D'ATTENTE : quand c'est plein, on s'inscrit ; une place libérée est gardée 5 min pour le premier de la file
+const FILE_MAX = 10, DELAI_TOUR_MS = 5 * 60 * 1000;
+const file = [];   // { numero, parrainage, jeton, reserveJusquA }
+const reservations = () => file.filter(f => f.reserveJusquA && f.reserveJusquA > Date.now()).length;
+function promouvoir() {
+  const t = Date.now();
+  for (let i = file.length - 1; i >= 0; i--) if (file[i].reserveJusquA && file[i].reserveJusquA <= t) file.splice(i, 1);   // tour expiré
+  let libres = MAX - sessions.size - reservations();
+  for (const f of file) { if (libres <= 0) break; if (!f.reserveJusquA) { f.reserveJusquA = t + DELAI_TOUR_MS; libres--; } }
+}
+setInterval(promouvoir, 5000);
+
 function liberer(s, effacer) {
   clearTimeout(s.timer);
   const proc = s.proc; s.proc = null;
@@ -29,6 +41,7 @@ function liberer(s, effacer) {
   sessions.delete(s.numero);
   if (effacer) try { fs.rmSync(path.join(DOSSIER, s.numero), { recursive: true, force: true }); } catch (e) {}
   sauver();
+  promouvoir();
   console.log(`[GESTION] Place libérée : +${s.numero}`);
 }
 
@@ -82,7 +95,11 @@ const tropDEssais = (ip) => {
   return l.length > 6;
 };
 
-const etat = () => ({ total: MAX, occupees: sessions.size, disponibles: MAX - sessions.size, pleine: sessions.size >= MAX });
+const etat = (avecReservations = true) => {
+  promouvoir();
+  const libres = Math.max(0, MAX - sessions.size - (avecReservations ? reservations() : 0));
+  return { total: MAX, occupees: MAX - libres, disponibles: libres, pleine: libres <= 0, attente: file.length };
+};
 
 const app = express();
 app.use(express.json({ limit: '2kb' }));
@@ -98,7 +115,11 @@ app.post('/api/connecter', (req, res) => {
 
   const existant = sessions.get(numero);
   if (existant) return res.json({ jeton: existant.jeton, statut: existant.statut, codeJumelage: existant.codeJumelage });
-  if (sessions.size >= MAX) return res.status(409).json({ erreur: 'pleines', ...etat() });
+  promouvoir();
+  const iFile = file.findIndex(f => f.numero === numero);
+  const aSonTour = iFile >= 0 && file[iFile].reserveJusquA > Date.now();
+  if (!aSonTour && MAX - sessions.size - reservations() <= 0) return res.status(409).json({ erreur: 'pleines', ...etat() });
+  if (iFile >= 0) file.splice(iFile, 1);
 
   const s = creer(numero, code, 'demarrage');
   sauver();
@@ -125,14 +146,48 @@ function admin(req, res, next) {
 }
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
 app.post('/api/admin/liste', admin, (req, res) => res.json({
-  ...etat(),
+  ...etat(false),
   sessions: [...sessions.values()].map(s => ({ numero: s.numero, statut: s.statut }))
 }));
 app.post('/api/admin/deconnecter', admin, (req, res) => {
   const s = sessions.get(String((req.body && req.body.numero) || ''));
   if (!s) return res.status(404).json({ erreur: 'Session introuvable.' });
   liberer(s, true);
-  res.json({ ok: true, ...etat() });
+  res.json({ ok: true, ...etat(false) });
+});
+
+function lireDemande(req, res) {
+  if (tropDEssais(req.ip)) { res.status(429).json({ erreur: 'Trop d’essais. Réessaie dans quelques minutes.' }); return null; }
+  const numero = String((req.body && req.body.numero) || '').replace(/\D/g, '');
+  const code = String((req.body && req.body.code) || '').trim().toUpperCase();
+  if (!/^[1-9]\d{7,14}$/.test(numero)) { res.status(400).json({ erreur: 'Numéro invalide : indicatif du pays + numéro, sans + ni espaces.' }); return null; }
+  if (!CODES.length || !CODES.includes(code)) { res.status(403).json({ erreur: 'Code de parrainage invalide.' }); return null; }
+  return { numero, code };
+}
+app.post('/api/file/rejoindre', (req, res) => {
+  const d = lireDemande(req, res); if (!d) return;
+  promouvoir();
+  if (sessions.has(d.numero)) return res.status(409).json({ erreur: 'Ton bot est déjà connecté.' });
+  let f = file.find(x => x.numero === d.numero);
+  if (!f) {
+    if (file.length >= FILE_MAX) return res.status(409).json({ erreur: 'La file d’attente est pleine. Reviens plus tard.' });
+    f = { numero: d.numero, parrainage: d.code, jeton: crypto.randomBytes(16).toString('hex'), reserveJusquA: null };
+    file.push(f); promouvoir();
+  }
+  res.json({ jeton: f.jeton });
+});
+app.get('/api/file/statut', (req, res) => {
+  promouvoir();
+  const i = file.findIndex(x => x.jeton === req.query.jeton);
+  if (i < 0) return res.status(404).json({ statut: 'perdu' });
+  const f = file[i], tour = !!(f.reserveJusquA && f.reserveJusquA > Date.now());
+  res.json({ position: i + 1, taille: file.length, tonTour: tour, restant: tour ? Math.ceil((f.reserveJusquA - Date.now()) / 1000) : 0 });
+});
+app.post('/api/file/quitter', (req, res) => {
+  const i = file.findIndex(x => x.jeton === (req.body && req.body.jeton));
+  if (i >= 0) file.splice(i, 1);
+  promouvoir();
+  res.json({ ok: true });
 });
 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
