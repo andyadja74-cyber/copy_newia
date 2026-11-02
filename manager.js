@@ -59,11 +59,13 @@ function lancer(s) {
   const dir = path.join(DOSSIER, s.numero);
   fs.mkdirSync(dir, { recursive: true });
   const proc = spawn(process.execPath, ['--max-old-space-size=110', '--expose-gc', path.join(__dirname, 'index.js')], {
-    env: { ...process.env, BOT_WORKER: '1', PHONE_NUMBER: s.numero, AUTH_DIR: dir },
+    env: { ...process.env, BOT_WORKER: '1', PHONE_NUMBER: s.numero, AUTH_DIR: dir, LOG_MESSAGES: process.env.LOG_MESSAGES || 'on' },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   s.proc = proc;
-  for (const flux of [proc.stdout, proc.stderr]) readline.createInterface({ input: flux }).on('line', l => analyser(s, l));
+  // 📜 Tous les logs du bot sont renvoyés dans les logs Render, précédés des 4 derniers chiffres du numéro
+  const etiquette = `[…${s.numero.slice(-4)}]`;
+  for (const flux of [proc.stdout, proc.stderr]) readline.createInterface({ input: flux }).on('line', l => { console.log(`${etiquette} ${l}`); analyser(s, l); });
   proc.on('exit', () => {
     if (s.proc !== proc) return;   // arrêt voulu
     s.proc = null;
