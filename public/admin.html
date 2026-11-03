@@ -71,6 +71,32 @@ input{-webkit-user-select:text;user-select:text}
 .banniere{position:fixed;left:50%;top:max(12px,env(safe-area-inset-top));transform:translate(-50%,-140%);z-index:30;width:min(440px,calc(100% - 24px));display:flex;align-items:center;gap:10px;padding:10px 12px 10px 16px;border-radius:22px;font-size:13px;line-height:1.3;color:#eaf6ff;background:#0b1626d8;border:1px solid #9fe3ff44;backdrop-filter:blur(26px);-webkit-backdrop-filter:blur(26px);box-shadow:0 14px 40px #000a;transition:transform .6s cubic-bezier(.2,.8,.2,1)}
 .banniere.on{transform:translate(-50%,0)}.banniere span{flex:1}
 .banniere button{width:auto;margin:0;padding:9px 16px;font-size:14px;border-radius:14px}.banniere b{cursor:pointer;opacity:.6;padding:6px}
+
+/* 💬 MESSAGES */
+#msgs{display:none}
+.acts{display:flex;flex-direction:column;gap:6px}.acts button{width:auto}
+.mb{padding:9px 14px;font-size:13px;font-weight:600;color:var(--ice);background:#9fe3ff14;border-color:#9fe3ff33;cursor:pointer;transition:.2s}.mb:hover{background:#9fe3ff26}
+.tousm{width:100%;margin:6px 0 4px;padding:13px;font-size:15px;font-weight:700;color:var(--ice);background:linear-gradient(160deg,#9fe3ff22,#ffffff08);border-color:#9fe3ff44;cursor:pointer}
+.mh{display:flex;align-items:center;gap:12px;margin-bottom:12px}.mh b{font-size:18px}
+.ret{width:auto;padding:8px 14px;font-size:13px;color:var(--ice);background:#9fe3ff12;border-color:#9fe3ff2a;cursor:pointer}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.chips button{width:auto;padding:8px 13px;font-size:13px;border-radius:99px;color:var(--mut);background:#ffffff0d;cursor:pointer;transition:.2s}
+.chips button.on{color:#04121f;font-weight:700;background:linear-gradient(180deg,#e6f8ff,#8fd8ff);border-color:transparent;box-shadow:0 0 18px #4cb7ff55}
+.seg{display:flex;gap:4px;padding:4px;border-radius:18px;background:#0006;border:1px solid #ffffff14;margin-bottom:10px}
+.seg button{flex:1;padding:10px 4px;font-size:14px;font-weight:600;color:var(--mut);background:none;border:0;border-radius:14px;cursor:pointer;transition:.2s}
+.seg button.on{color:var(--txt);background:linear-gradient(160deg,#9fe3ff30,#ffffff0a);box-shadow:inset 0 1px 0 #ffffff40}
+.rech{display:flex;gap:8px}.rech input{padding:13px 16px;font-size:15px;border-radius:16px}
+.rech select{width:42%;padding:13px 10px;font:inherit;font-size:14px;color:var(--txt);background:#00000055;border:1px solid #ffffff1f;border-radius:16px;outline:0}
+.mc{margin:12px 2px 2px;font-size:12px;color:var(--mut)}
+.mg{margin-top:10px;padding:12px 14px;border-radius:18px;background:#0005;border:1px solid #ffffff14;border-left:3px solid var(--ok);animation:monte .4s both}
+.mg.env{border-left-color:#6fb6ff}
+.mg .th{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;color:var(--mut)}
+.sens{padding:3px 10px;border-radius:99px;font-weight:700;background:#7ff0d022;color:var(--ok)}.mg.env .sens{background:#6fb6ff22;color:#9fd0ff}
+.bt{margin-left:6px;padding:2px 8px;border-radius:99px;background:#ffffff14;color:var(--ice);font-size:11px}
+.conv{margin-top:6px;font-size:13px;color:var(--txt);font-weight:600;word-break:break-word}
+.de{font-size:12px;color:var(--mut);word-break:break-word}
+.tx{margin-top:6px;font-size:15px;white-space:pre-wrap;word-break:break-word}.tx i{color:var(--mut)}
+.meta{margin-top:6px;font-size:11px;color:#5d7488;word-break:break-all}
 </style></head><body>
 <div class="fond"><i></i><i></i></div><div class="motif"></div>
 <main class="v">
@@ -83,12 +109,21 @@ input{-webkit-user-select:text;user-select:text}
   <section id="liste">
     <div class="tuiles"><div class="t o"><b id="tO">0</b><span>Occupées</span></div><div class="t l"><b id="tL">0</b><span>Libres</span></div><div class="t"><b id="tT">0</b><span>Total</span></div></div>
     <div class="maj"><span id="maj">Actualisation…</span><button id="rafr" type="button">↻ Actualiser</button></div>
+    <button class="tousm" id="tousm" type="button">💬 Voir les messages de tous les bots</button>
     <div id="lignes"></div><div class="err" id="err2"></div>
+  </section>
+  <section id="msgs">
+    <div class="mh"><button class="ret" id="retour" type="button">← Retour</button><b>💬 Messages</b></div>
+    <div class="chips" id="chips"></div>
+    <div class="seg" id="seg"><button data-s="tous" class="on">Tous</button><button data-s="recu">⬇ Reçus</button><button data-s="envoye">⬆ Envoyés</button></div>
+    <div class="rech"><input id="mq" placeholder="Rechercher un mot, un nom, un numéro…" autocomplete="off"><select id="mtype"><option value="">Tous types</option></select></div>
+    <p class="mc" id="mc"></p>
+    <div id="mlist"></div>
   </section>
 </main><div class="toast" id="toast"></div>
 <nav class="tabbar"><a href="/"><em>🏠</em>Accueil</a><a href="/admin" class="on"><em>🔐</em>Admin</a></nav>
 <script>
-const $=i=>document.getElementById(i);let cle='',tm=null,dern=0,pt=null;
+const $=i=>document.getElementById(i);let cle='',tm=null,dern=0,pt=null,botsListe=[],msgNums=[],msgSens='tous',msgTimer=null,rechT=null;
 const nom={connecte:'Connecté',code:'En attente du code',demarrage:'Démarrage',reconnexion:'Reconnexion'};
 const toast=t=>{const e=$('toast');e.textContent=t;e.classList.add('on');clearTimeout(pt);pt=setTimeout(()=>e.classList.remove('on'),2600)};
 const compte=(id,v)=>{const e=$(id),a=+e.textContent,t0=performance.now();(function f(t){const k=Math.min(1,(t-t0)/500);e.textContent=Math.round(a+(v-a)*k);if(k<1)requestAnimationFrame(f)})(t0)};
@@ -97,9 +132,9 @@ async function charger(){
   try{
     const{r,d}=await api('/api/admin/liste');
     if(!r.ok){$('err').textContent=d.erreur;$('entree').style.display='block';$('liste').style.display='none';clearInterval(tm);return}
-    $('entree').style.display='none';$('liste').style.display='block';$('err2').textContent='';
+    botsListe=d.sessions;$('entree').style.display='none';if($('msgs').style.display!=='block')$('liste').style.display='block';$('err2').textContent='';
     compte('tO',d.occupees);compte('tL',d.disponibles);compte('tT',d.total);dern=Date.now();
-    $('lignes').innerHTML=d.sessions.length?d.sessions.map((s,i)=>`<div class="ligne" style="animation-delay:${i*.07}s"><div class="av">${s.numero.slice(-2)}</div><div class="inf"><b>+${s.numero}</b><span class="${s.statut==='connecte'?'':'at'}"><i></i>${nom[s.statut]||s.statut}</span></div><button class="x" data-n="${s.numero}">Déconnecter</button></div>`).join(''):'<div class="vide"><em>❄️</em>Aucun ami connecté</div>';
+    $('lignes').innerHTML=d.sessions.length?d.sessions.map((s,i)=>`<div class="ligne" style="animation-delay:${i*.07}s"><div class="av">${s.numero.slice(-2)}</div><div class="inf"><b>+${s.numero}</b><span class="${s.statut==='connecte'?'':'at'}"><i></i>${nom[s.statut]||s.statut}</span></div><div class="acts"><button class="mb" data-m="${s.numero}">💬 ${s.nb||0}</button><button class="x" data-n="${s.numero}">Déconnecter</button></div></div>`).join(''):'<div class="vide"><em>❄️</em>Aucun ami connecté</div>';
   }catch(_){$('err2').textContent='Connexion impossible.'}
 }
 setInterval(()=>{if(dern)$('maj').textContent='Actualisé il y a '+Math.round((Date.now()-dern)/1000)+' s'},1000);
@@ -107,10 +142,41 @@ $('ok').onclick=()=>{cle=$('mdp').value;$('err').textContent='';charger();clearI
 $('mdp').onkeydown=e=>{if(e.key==='Enter')$('ok').click()};
 $('oeil').onclick=()=>{const m=$('mdp');m.type=m.type==='password'?'text':'password'};
 $('rafr').onclick=()=>{charger();toast('Liste actualisée')};
-$('lignes').onclick=async e=>{const n=e.target.dataset&&e.target.dataset.n;if(!n||!confirm('Déconnecter +'+n+' et libérer sa place ?'))return;
+$('lignes').onclick=async e=>{const m=e.target.dataset&&e.target.dataset.m;if(m){ouvrirMsgs([m]);return}const n=e.target.dataset&&e.target.dataset.n;if(!n||!confirm('Déconnecter +'+n+' et libérer sa place ?'))return;
   const{r,d}=await api('/api/admin/deconnecter',{numero:n});if(r.ok)toast('+'+n+' déconnecté · place libérée');else $('err2').textContent=d.erreur;charger()};
 
 /* 📱 installation + ressenti natif */
 if('serviceWorker' in navigator)addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
 document.addEventListener('click',e=>{if(e.target.closest('button,a,.slot')&&navigator.vibrate)navigator.vibrate(8)});
-</script></body></html>
+
+/* 💬 messages reçus / envoyés par les bots */
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function ouvrirMsgs(nums){msgNums=nums;$('liste').style.display='none';$('msgs').style.display='block';rendreChips();chargerMsgs();clearInterval(msgTimer);msgTimer=setInterval(chargerMsgs,5000)}
+function fermerMsgs(){clearInterval(msgTimer);$('msgs').style.display='none';$('liste').style.display='block'}
+function rendreChips(){
+  $('chips').innerHTML='<button data-b="" class="'+(msgNums.length?'':'on')+'">Tous les bots</button>'+botsListe.map(s=>'<button data-b="'+esc(s.numero)+'" class="'+(msgNums.includes(s.numero)?'on':'')+'">…'+esc(s.numero.slice(-4))+'</button>').join('')}
+async function chargerMsgs(){
+  try{
+    const{r,d}=await api('/api/admin/messages',{numeros:msgNums,sens:msgSens,q:$('mq').value,type:$('mtype').value});
+    if(!r.ok){$('mc').textContent=d.erreur;return}
+    const sel=$('mtype'),cur=sel.value,opts='<option value="">Tous types</option>'+d.types.map(t=>'<option'+(t===cur?' selected':'')+'>'+esc(t)+'</option>').join('');
+    if(sel.dataset.o!==opts){sel.innerHTML=opts;sel.dataset.o=opts}
+    $('mc').textContent=d.messages.length+' affiché(s) · '+d.total+' gardé(s) en mémoire (max '+d.max+' par bot, les plus anciens sont effacés)';
+    const multi=msgNums.length!==1;
+    $('mlist').innerHTML=d.messages.length?d.messages.map(m=>{
+      const h=new Date(m.t).toLocaleString('fr-FR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});
+      return '<div class="mg '+(m.sens==='envoye'?'env':'')+'"><div class="th"><span><span class="sens">'+(m.sens==='envoye'?'⬆ Envoyé':'⬇ Reçu')+'</span>'+(multi?'<span class="bt">bot …'+esc(m.bot.slice(-4))+'</span>':'')+'</span><span>'+esc(h)+'</span></div>'
+        +'<div class="conv">'+esc(m.conv)+'</div>'
+        +'<div class="de">'+(m.sens==='envoye'?'🤖 Bot → '+(m.groupe?'le groupe':(m.numero?esc(m.numero):'numéro non reçu')):'De : '+esc(m.de)+(m.numero&&!m.de.includes(m.numero)?' · '+esc(m.numero):''))+'</div>'
+        +'<div class="tx">'+(m.texte?esc(m.texte):'<i>('+esc(m.type)+', pas de texte)</i>')+'</div>'
+        +'<div class="meta">'+esc(m.type)+(m.vue1?' · 👁 vue unique':'')+' · ID '+esc(m.id)+'</div></div>'}).join(''):'<div class="vide"><em>💬</em>Aucun message pour ces filtres</div>';
+  }catch(_){$('mc').textContent='Connexion impossible.'}
+}
+$('tousm').onclick=()=>ouvrirMsgs([]);
+$('retour').onclick=fermerMsgs;
+$('chips').onclick=e=>{const b=e.target.dataset&&e.target.dataset.b;if(b===undefined)return;
+  if(b==='')msgNums=[];else msgNums=msgNums.includes(b)?msgNums.filter(x=>x!==b):[...msgNums,b];rendreChips();chargerMsgs()};
+$('seg').onclick=e=>{const s=e.target.dataset&&e.target.dataset.s;if(!s)return;msgSens=s;[...$('seg').children].forEach(b=>b.classList.toggle('on',b.dataset.s===s));chargerMsgs()};
+$('mq').oninput=()=>{clearTimeout(rechT);rechT=setTimeout(chargerMsgs,300)};
+$('mtype').onchange=chargerMsgs;
+</script><script src="/musique.js" defer></script></body></html>
