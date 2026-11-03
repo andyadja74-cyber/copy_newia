@@ -206,6 +206,42 @@ async function journaliserMessage(sock, msg, { muet = false } = {}) {
   }
 }
 
+// 💬 Messages envoyés au gestionnaire (page admin) : une ligne « @@MSG@@{json} » par message reçu ou envoyé.
+// Le gestionnaire les garde en mémoire (100 par bot, le plus ancien est effacé) et ne les affiche pas dans les logs.
+async function emettreMessage(sock, msg) {
+  if (!process.env.BOT_WORKER || !msg || !msg.key || !msg.message) return;
+  try {
+    const jid = msg.key.remoteJid || '?';
+    if (jid === 'status@broadcast') return;
+    const estGroupe = jid.endsWith('@g.us'), envoye = !!msg.key.fromMe;
+    const { content, viewOnce } = deballerMessage(msg.message);
+    const cle = content ? Object.keys(content).find(k => k !== 'messageContextInfo') : null;
+    if (!cle || ['reactionMessage', 'protocolMessage', 'senderKeyDistributionMessage'].includes(cle)) return;   // pas de bruit
+    const type = TYPES_MESSAGE[cle] || cle;
+    const corps = content.conversation || content.extendedTextMessage?.text || content[cle]?.caption || '';
+    const texte = corps.replace(/\s+/g, ' ').trim().slice(0, 500);
+
+    let conv, de, numero = null;
+    if (estGroupe) {
+      conv = '👥 ' + await nomGroupe(sock, jid);
+    } else {
+      const telChat = await numeroReel(sock, jid, msg.key.remoteJidAlt);
+      conv = '👤 ' + libelleContact(jid, envoye ? null : msg.pushName, telChat);
+      if (envoye && telChat && !telChat.endsWith('@lid')) numero = numeroDuJid(telChat);   // numéro du destinataire
+    }
+    if (envoye) {
+      de = '🤖 Bot';
+    } else {
+      const jidAuteur = estGroupe ? msg.key.participant : jid;
+      const tel = await numeroReel(sock, jidAuteur, estGroupe ? msg.key.participantAlt : msg.key.remoteJidAlt);
+      de = libelleContact(jidAuteur, msg.pushName, tel);
+      numero = tel && !tel.endsWith('@lid') ? numeroDuJid(tel) : null;
+    }
+    const t = msg.messageTimestamp ? lireTimestamp(msg.messageTimestamp) : Date.now();
+    console.log('@@MSG@@' + JSON.stringify({ id: msg.key.id, t, sens: envoye ? 'envoye' : 'recu', groupe: estGroupe, conv, de, numero, type, texte, vue1: !!viewOnce }));
+  } catch (e) { /* un message non lisible ne doit jamais gêner le bot */ }
+}
+
 // ⏱️ Intervalle aléatoire entre deux messages de .drague et .cute (en ms)
 // Modifiable avec les variables Render INTERVALLE_MIN_MS et INTERVALLE_MAX_MS
 const INTERVALLE_MIN_MS = Math.max(1000, parseInt(process.env.INTERVALLE_MIN_MS, 10) || 3000);
@@ -2377,6 +2413,16 @@ async function startBot() {
     });
     sock = socketLocal;
 
+    // 💬 Chaque message envoyé par le bot est aussi transmis à la page admin
+    if (process.env.BOT_WORKER) {
+      const envoyerOrigine = socketLocal.sendMessage.bind(socketLocal);
+      socketLocal.sendMessage = async (...args) => {
+        const r = await envoyerOrigine(...args);
+        emettreMessage(socketLocal, r);
+        return r;
+      };
+    }
+
     socketLocal.ev.on('creds.update', () => {
       saveCreds().catch(e => console.error('⚠️ Sauvegarde de session impossible :', e?.message || e));
     });
@@ -2516,6 +2562,7 @@ async function startBot() {
       if (processedMessages.has(messageId)) return;
       processedMessages.add(messageId);
       if (processedMessages.size > 2000) processedMessages.clear();
+      emettreMessage(sock, msg);   // reçu (ou tapé depuis le téléphone) → page admin
 
       const remoteJid = msg.key.remoteJid;
       const isGroup = remoteJid.endsWith('@g.us');

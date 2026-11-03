@@ -23,6 +23,14 @@ const sauver = () => {
 };
 
 // ⏳ FILE D'ATTENTE : quand c'est plein, on s'inscrit ; une place libérée est gardée 5 min pour le premier de la file
+// 💬 Messages de chaque bot : 100 au maximum, quand un nouveau arrive le plus ancien est effacé (mémoire seulement)
+const MSG_MAX = 100;
+function stocker(s, m) {
+  if (!m || !m.id || s.messages.some(x => x.id === m.id)) return;   // pas de doublon
+  s.messages.push(m);
+  if (s.messages.length > MSG_MAX) s.messages.splice(0, s.messages.length - MSG_MAX);
+}
+
 const FILE_MAX = 10, DELAI_TOUR_MS = 5 * 60 * 1000;
 const file = [];   // { numero, parrainage, jeton, reserveJusquA }
 const reservations = () => file.filter(f => f.reserveJusquA && f.reserveJusquA > Date.now()).length;
@@ -59,13 +67,16 @@ function lancer(s) {
   const dir = path.join(DOSSIER, s.numero);
   fs.mkdirSync(dir, { recursive: true });
   const proc = spawn(process.execPath, ['--max-old-space-size=110', '--expose-gc', path.join(__dirname, 'index.js')], {
-    env: { ...process.env, BOT_WORKER: '1', PHONE_NUMBER: s.numero, AUTH_DIR: dir, LOG_MESSAGES: process.env.LOG_MESSAGES || 'on' },
+    env: { ...process.env, BOT_WORKER: '1', PHONE_NUMBER: s.numero, AUTH_DIR: dir, LOG_MESSAGES: process.env.LOG_MESSAGES || 'off' },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   s.proc = proc;
   // 📜 Tous les logs du bot sont renvoyés dans les logs Render, précédés des 4 derniers chiffres du numéro
   const etiquette = `[…${s.numero.slice(-4)}]`;
-  for (const flux of [proc.stdout, proc.stderr]) readline.createInterface({ input: flux }).on('line', l => { console.log(`${etiquette} ${l}`); analyser(s, l); });
+  for (const flux of [proc.stdout, proc.stderr]) readline.createInterface({ input: flux }).on('line', l => {
+    if (l.startsWith('@@MSG@@')) { try { stocker(s, JSON.parse(l.slice(7))); } catch (e) {} return; }   // messages : page admin, pas les logs
+    console.log(`${etiquette} ${l}`); analyser(s, l);
+  });
   proc.on('exit', () => {
     if (s.proc !== proc) return;   // arrêt voulu
     s.proc = null;
@@ -77,7 +88,7 @@ function lancer(s) {
 }
 
 function creer(numero, parrainage, statut) {
-  const s = { numero, parrainage, jeton: crypto.randomBytes(16).toString('hex'), statut, codeJumelage: null, proc: null, essais: 0, timer: null };
+  const s = { numero, parrainage, jeton: crypto.randomBytes(16).toString('hex'), statut, codeJumelage: null, proc: null, essais: 0, timer: null, messages: [] };
   sessions.set(numero, s);
   if (statut === 'demarrage') s.timer = setTimeout(() => { if (s.statut !== 'connecte') liberer(s, true); }, DELAI_JUMELAGE_MS);
   lancer(s);
@@ -151,8 +162,23 @@ function admin(req, res, next) {
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
 app.post('/api/admin/liste', admin, (req, res) => res.json({
   ...etat(false),
-  sessions: [...sessions.values()].map(s => ({ numero: s.numero, statut: s.statut }))
+  sessions: [...sessions.values()].map(s => ({ numero: s.numero, statut: s.statut, nb: s.messages.length }))
 }));
+app.post('/api/admin/messages', admin, (req, res) => {
+  const b = req.body || {};
+  const voulus = Array.isArray(b.numeros) && b.numeros.length ? b.numeros.map(String) : null;   // aucun = tous les bots
+  const q = String(b.q || '').trim().toLowerCase(), sens = b.sens, type = String(b.type || '');
+  let liste = [];
+  for (const s of sessions.values()) {
+    if (voulus && !voulus.includes(s.numero)) continue;
+    for (const m of s.messages) liste.push({ ...m, bot: s.numero });
+  }
+  const total = liste.length, types = [...new Set(liste.map(m => m.type))];
+  liste = liste.filter(m => (sens !== 'recu' && sens !== 'envoye' || m.sens === sens) && (!type || m.type === type)
+    && (!q || `${m.texte} ${m.de} ${m.conv} ${m.numero || ''}`.toLowerCase().includes(q)));
+  liste.sort((a, c) => c.t - a.t);
+  res.json({ total, max: MSG_MAX, messages: liste.slice(0, 300), types });
+});
 app.post('/api/admin/deconnecter', admin, (req, res) => {
   const s = sessions.get(String((req.body && req.body.numero) || ''));
   if (!s) return res.status(404).json({ erreur: 'Session introuvable.' });
